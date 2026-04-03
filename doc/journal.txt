@@ -1,0 +1,37 @@
+==========
+04/01/2026
+
+Working with Gemini on the Coff class.
+
+Next up:
+x   - post the latest .h and .cpp for review
+x   - implement the Write function
+x   - create an experiments::CallCppFunction that uses the Coff class
+
+
+link /subsystem:console /entry:mainCRTStartup ^
+test2.obj logger.obj pch.obj ^
+libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib ^
+kernel32.lib shell32.lib ^
+/NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib
+
+
+==========
+04/02/2026
+
+x   - make a tests folder and get the output going into a hello subfolder of the tests folder
+x   - make a shortcut on the desktop for the developer command line that sets the working directory to the tests folder
+x   - clean up the solution root folder
+
+o   - create a hello.svl project file in tests/hello
+o   - create a hello.sv file in tests/hello/src with a Main(){..} function that calls SVGE_Log("hello from svl!");
+
+    - in svl:
+        - parse the command line, print out errors if the command line is invalid
+        - parse the project file, print out errors if the project file is invalid
+        - walk the source tree from the root folder specified in the project file, parsing .sv files in parallel
+        - for each .sv..
+            - parse the file into a parse tree for the file, print out syntax errors
+            - support the defining of functions that have no parameters or take a char* (referred to in svl as zs8)
+            - support calling functions and passing no parameters or passing a literal zs8
+    

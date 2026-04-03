@@ -1,0 +1,7 @@
+[Project]
+Name=MyGame
+Entry=main
+
+[Linker]
+Libs=svge.lib,user32.lib,shell32.lib
+Mode=Debug

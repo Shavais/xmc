@@ -1,0 +1,388 @@
+
+The svl programming language
+
+1. AOT Compilation
+
+- Compiles ahead of time straight to native code; does not use LLVM or any IL.
+- Early compiler versions are written in C++ using platform SDKs, they write out COFF files to be linked by platform linkers.
+
+2. Efficient, Deterministic Memory Management
+
+- Does not garbage collect.
+- Has arenas and release pools as first class objects.
+- Objects not explicitly marked as raw that are not stored on the stack or in an arena or a release pool are reference counted and discarded immediately when the reference count reaches zero.
+
+3. Global Code Visibility
+
+- Anything in a global or namespaced scope that is anywhere in the code base is accessible from anywhere else, no includes, imports, or "using namespace" statements are required.
+- Code can be put into namespaces, but when referencing something, its namespace path only needs to be specified when there is ambiguity otherwise.
+- The translation unit (source code file) name is an optionally-specified first segment of a namespace path, so classes or functions of the same name can exist at the root of different files.
+- Namespace path prefixes can be shortened to the shortest set of segments that eliminates ambiguity.
+- Object files (.svo) are created for translation units during compilation to speed up future compilation, but they may get recompiled if new code produces inferred type morphing.
+
+4. Project Based Build System
+
+An svl target is either an executable, a static library or a dynamic library.
+
+An invocation of the svl command line compiler reads like this:
+
+svl projectname config
+
+eg. svl hello debug
+
+There is a project file which is a [projectname].svl file. (eg. hello.svl) 
+The source code is in .sv files. 
+A root folder for the source tree can be specified in the project file. 
+A root folder for the intermediate files must be specified.
+The source folder tree is duplicated by the compiler under the intermediate root folder, and a .svo file is created for each .sv file in the source folder tree.
+A single linkable (.obj, on windows) is created for a target, in the intermediate root, of the same name as the project file. (eg., hello.obj)
+The platform linker is invoked by the compiler (for now).
+The compiler places a single linked target output (.exe, etc.) in the output folder specified in the project file.
+
+The projectname.svl file:
+
+_________
+# sample svl Project File (hello.svl)
+
+arch: x64
+type: exe
+entry: hello:main       # names the .sv file and the entry point function
+subsystem: console
+crt: static             # options: static, dynamic, static-debug, dynamic-debug
+
+libpaths:
+    C:/Windows/System32
+
+static-libs: glfw3 openal
+dynamic-libs: kernel32 user32 opengl32
+
+source: src
+
+[debug]                 # a config doesn't have to be debug or release, it can have any name
+
+optimization: 0
+symbols: yes
+libpaths:
+    deps/x64/Debug
+
+intermediate: obj/x64/Debug
+output: bin/x64/Debug
+
+[release]
+optimization: 9
+symbols: no
+libpaths:
+    deb/x64/Release
+
+intermediate: obj/x64/Release
+output: bin/x64/Release
+---------
+
+5. Compile Time Inferred Type Morphing
+
+a. built-in types and their refinements:
+
+boolean:    b
+integer:    i8, i16, i32, i64, u8, u16, u32, u64
+float:      f32, f64
+decimal:    d16, d32, d64       - fraction type that maintains an integer numerator and denominator and doesn't incur floating point representation errors)
+character:  c8, c16,            - single byte character, double byte character
+            zs8, zs16, zs32     - zero-terminated string of c8's, of c16's
+            s8, s16,            - length-specified (pascal) string of c8's, of c16's
+            utf8, us            - unicode strings
+
+atomic  - qualifier that yields an atomic versions of the simple type (this is a hint; atomics are inferred when references to things are passed across threads).
+
+built in structures and objects:
+
+struct      - no functions
+class
+list
+queue
+stack
+map         - binary tree
+hashset     
+hashmap
+(others to be determined)
+funcptr
+
+concurrent - qualifier that yields a concurrent version of a container (this is also a hint).
+
+These built-ins, structures and objects have various versions that the compiler infers between. 
+
+The compiler revises it's inference of exactly what version the structure will used based on what code it encounters that interacts with it. 
+
+When you first declare a built-in structure or object, it is assumed to be immutable, fixed sized, rigid shaped (no runtime added attributes), 
+materialized (contains no pointers, is contiguous and aligned), and non-concurrent.
+
+If you change it or its contents, it becomes mutable. 
+If you add elements to it it becomes resizeable.
+If you do something that requires something in it to be reference counted, it becomes virtual (contains shared pointers) and might become non-contiguous.
+If you put something in it that is of a different type than what is already in it, it becomes virtual and heterogenous (containing pointers to different types).
+If you add a new member to it, it becomes dynamic (dynamic composition; supporting adding and removing members at run time).
+If you pass a reference to it across a thread boundary, it becomes concurrent.
+
+There is a refinement bitmask associated with each typed symbol:
+
+    Immutable           | Mutable           - does anything change it?
+    Fixed               | Resizable         - does anything add or remove elements from it?
+    Materialized        | Virtual           - are there any reference assignments?
+    Raw                 | Arc               - are there are non-raw-qualified reference assignments?
+    Homogenous          | Heterogenous      - are different typed elements added into it?
+    Rigid               | Fluid             - does anything ascribe attributes to it that it doesn't initially posess?
+    Serial              | Concurrent        - is it non-locally accessed from a spawn block?
+
+For parameter refinement markers in function signatures, the Serial vs Concurrent bit has a slightly different meaning:
+
+    Serial              | Concurrent        - does this function access this parameter from a spawn block or call any function that does?
+
+In this way, a programmer can write very fast code in hot paths, and convenient code everywhere else.
+
+var is a way to declare and potentially initialize a variable that infers its type.
+
+var v;                  - Not an error; v eventually takes on whatever type is assigned to it. And then it may morph after that. 
+
+User~mrrmrs u           - u is ifrmrs, actually, but any attempt to morph it higher than mrrmrs will result in a compile time error.
+
+Note that if an object is materialized (not a pointer), the raw/arc bit has no bearing. Raw/Arc is only relevant for pointers.
+
+b. variants
+
+var u = Employee.Retrieve(id);      - u is a variant<User, ErrorNotFound>
+u = 99;                             - now u is a variant<User, ErrorNotFound, u8>
+u.TailState = TailStates.Wagging;   - now u has an runtime added attribute of type enum TailStates
+u.message = "woof!";                - another attribute of type sz8
+User u = Employee.Retrieve(id);     - u is User, if ErrorNotFound was returned, u is null
+
+
+
+6. Ergonomic Control of Pointer Types
+
+There are two types of assignments:
+
+v = mylist[i]           - copy assignment.
+
+There, v receives a copy of the i'th element if mylist. Maybe not super efficient, but good for isolation.
+
+v := mylist[i];         - reference assignment. 
+
+If v has local scope (is temporary), or lives in the same arena with mylist, it becomes a temporary raw pointer, and mylist is unchanged. 
+If v is a class member or from a non-local scope, and does not live in the same arena with mylist, and was not qualified as raw, it becomes a shared pointer, and mylist becomes virtual. 
+(Normally, things on the right side of an operator don't morph, but reference assignment is an exception.)
+
+
+7. First Class Arenas and Release Pools
+
+a. Arenas
+
+You can declare an arena, and put things into it, like this:
+
+arena a1(A1_SIZE);      - the size parameter is optional, if omitted, the arena will use a project-configured arena size, or try to guess at what a reasonable size might be.
+
+list myList:a1 = ["here", "is", "a", "bit", "of", "text"];    - initially a fixed length array of pointers, placed in a1, to zs8's also placed in a1.
+
+An arena must have the same or greater scope/lifetime of what is put in it so that by the time the arena is destroyed, the things in it are no more.
+If an object is in the same arena with something that gets assigned to it, won't morph into a reference counted object.
+
+var v:a1 := mylist[i];   - here, since myList is also in a1, v becomes a raw pointer to the i'th element of mylist, and mylist is unchanged.
+
+Whether or not runtime subscript boundary checks are done is configured in the project file. Eg., globally they might not be, but in "debug" they might be.
+By default they are not.
+
+If you remove things from mylist, since it is in an arena, the count of items goes down, but the allocated size remains the same. You can't deallocate from an arena.
+You can grow things in there, but you can't shrink them.
+
+b. Release Pools
+
+You can declare a release pool, and put things into it, like this:
+
+release_pool r1;
+
+list myList:r1 = ["here", "we", "go", "again"];
+
+r1.drain()                                  - now, myList is empty.
+s16 myString:r1 = "what a lovely day!";     - now, r1 has two pointers to a pointer to a heap allocation. One for myList and one for myString.
+r1.drain()                                  - now, both myList and myString are empty. If you add to myList or assign a new string to myString, they get new allocations. But r1 still tracks them.
+
+for (var v in myList)
+{
+    .. here, v is a simple reference to an element, regardless of whether v or myList are in any arena or release pool.
+}
+
+
+8. List and Map Comprehensions
+
+var l = [upper(s) for s in name];   - list comprehension. Generates a list of whatever type of elements are in name. Initially ~ifrmrs.
+
+Let's say name is a zs8 and its elements are c8's.
+
+l = [n*n for n in range(10)];       - now the elements of l are variants. Either c8's or integers. Not exactly ideal, but possible.
+
+l[6] = "woohoo!"                    - heh. yep. Legal. Now the possible variants are u8, c8 or zs8.
+
+var v = l[6]                        - the variable v shadows whatever v was before. Now it's a variant, for the rest of the scope.
+
+if (v == 6*6) { print("maybe, but no"); }
+else if (v == "woohoo!") { print("there you go"); }
+else if (v == someObjectInstance) { print("nope"); }     - comparison's don't morph things, they just return false if they don't make sense.
+
+
+Functions may specify types they require, or they may take var types:
+
+class User {
+    
+    sz8 name;
+    list inventory;
+
+    SetName(sz8 name)           - only sz8's can be passed. Passing something else is a compile time error. They're passed by reference, since they're not simple types.
+    {
+        me.name = name;                 - name gets a copy of the reference-passed name
+        LastAssignedName := name;       - the (declared elsewhere) global, LastAssignedName, becomes a shared pointer, if it wasn't already. Lots of cascading compiler work.
+    }
+   
+    AddInventoryItem(var thing)
+    {
+        inventory.add(thing)    - inventory's items will become variants (tagged unions) of each type of thing that is passed in here.
+    }
+}
+
+..
+
+ref ss8 LastAssignedName;       - Now the compiler knows ahead of time that this is a shared pointer to a zs8. Shorter build times. And it won't let you morph this.
+
+ref var LastAssignedItem;       - This is a shared pointer to a morphing variant. Fun fun.
+
+
+class Node {
+    ref Node next;              - Shared ownership
+    weak Node parent;           - Safe observer (becomes null if parent dies)
+    raw Node peer;              - Blazing fast, totally unsafe
+}
+
+
+9. First Class Null
+
+The super special null value:
+
+var n = null;                   - the compiler has no idea what this is yet. Defer judgement.
+if (n) DoSomething();           - A no-op. Doesn't make sense yet.
+n = true;                       - oh wait! It's a b8! Now null becomes false. (For b8's, null is false.) But DoSomething still doesn't get called above.                                 
+if (n) DoSomething();           - now it will do it.
+
+null has a special meaning for each simple type. For classes, it causes them to become "optionals", which have a special hidden b8 member, __assigned.
+
+User u = null;                  - a reference to a default constructed optional User instance that is flagged as unassigned.
+
+u.SetName("Kristy")             - ignored at run time, because of the "unassigned" flag. Source of bugs, yes. Maybe static analysis could warn about it.
+
+
+var okidokey = null;
+
+
+Resolving inference conflicts:
+
+User u;                     - Temporary. On the stack. Maybe not terribly useful in this case, but legal.
+
+u.SetName(okidokey)         - This passes a null zs8 into SetName and doesn't alter okidokey; passing a variable to a function doesn't morph the variable.
+
+okidokey = "Sam";           - okidokey is now a sz8, but u.name is still null. Morphing doesn't retroactively affect values, only types.
+
+okidokey = 99;              - okidokey becomes a variant with zs8 and i8 components. 
+                              the zs8 component is still null, and that is the component that is passed to u.SetName above.
+
+okidokey = MyObj.Create()   - This static factory returns an instance of MyObj. Reference? or copy? depends on optimization.
+                              But okidokey's tagged union ends up with a materialized instance of a MyObj. (Copy assignment.) 
+
+okidokey := MyObj.Create()  - The MyObj in okidokey becomes a shared pointer (or a raw pointer if there is an arena in common) instead of a materialized instance. 
+                              The assignment above now copies the value into an allocated space pointed at by the shared pointer.
+                              
+
+other.Set(okidokey)         - If Set takes a specific type that is not in okidokey's union, this passes a null value of that type into the function.
+                              If Set takes a var, any operators used in Set may morph their lvalues.
+
+onemore := okidokey         - if onemore is a var, it becomes a shared pointer to a tagged union, and okidokey is unaltered. 
+                              If onemore is a specific type that isn't in okidokey's tagged union, its value becomes null and okidokey is unaltered: 
+                              Assignment (and other operators) don't morph the right side.
+
+
+Passing things into functions may morph things inside those functions, but it does not morph what you're passing into it.
+Assignments and other binary operators may morph things on their left side, but they don't morph things on their right side..
+Exception: Reference assignments to things that are not shared pointers morph them into shared pointers, unless both sides live in the same arena.
+Copy assignments into shared pointers decref whatever they were pointing at, create a new allocation, and point the shared pointer at it.
+Copy assignments of arena managed objects into same-arena-managed raw pointers simply change where the raw pointer is pointing.
+
+Special cases for built-ins:
+
+c8 c = 'a';
+zs16 s = c;                 - s remains an zs16, and it now contains a single c16 whose value is 'a'.
+
+
+
+7. Ergonomic Error Handling
+
+a. The error Type
+
+There is a special built in error type that facilitates this kind of syntax:
+
+error FileOpenFailed(zs8 message); 
+
+This declares an error object with a constructor that takes a single parameter that is automatically forwarded to a member of the same name and type.
+To instantiate this error, you would type something like this:
+
+var result = FileOpenFailed(someErrorStr);      - err.message will have a copy of the value of someErrorStr
+
+or this:
+ 
+error err = FileOpenFailed();       - null is passed as the message. err.message will be null
+
+b. Error Blocks
+
+There is a special block type, which, if any function in that block returns a variant whose tagged value type is error, it immediately exits the block:
+
+{? 
+    var file = open("data.txt"); // If this returns Error, skip to the end of {?}
+    var head = file.read(10);    // This line never runs if 'open' failed
+    print(head);                 // Neither does this
+?} 
+
+c. Reaching
+
+You can "reach" into a nested scope after the scope to pull out values
+
+if (file is FileOPenFailed) { errout("failed to open data.txt: {file.message}\n"); return; }
+
+Variables in nested scopes are accessible in the parent scope afterward, but if the execution that populates them is skipped, their value will be null.
+
+d. Shadowing
+
+Variables can also be shadowed:
+
+var u = database.find(id); // Morphic: <User | NotFound | Timeout>
+if (u is User) {
+    User u = u;            // Shadow: Inside this if, u is strictly a User.
+    u.login();
+}
+   
+// out here, u is the variant returned from database.find.
+
+If you shadow a variable in the same scope, it is replaced by its shadow for the remainder of that scope.
+
+e. Error Operator
+
+var u = database.find(id) | { errout("database.find failed: {u.message}"; return; }
+
+User u = u;
+u.login();
+
+
+f. Nested Scope Labels and Break;
+
+{:main
+    {:nested
+        if (someCondition) break :main;
+        if (otherCondition) break :nested;
+        DoStuff();
+    }
+    DoOtherStuff();
+}
+

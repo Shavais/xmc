@@ -1,0 +1,6 @@
+#pragma once
+
+int Hello();
+void RunInMemory();
+void RunCppFunction();
+void CallCppFunction();
