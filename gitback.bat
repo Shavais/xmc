@@ -1,7 +1,7 @@
 @echo off
 :: --- Settings ---
-set PROJECT_NAME=svl
-set BACKUP_DEST=E:\git\svl
+set PROJECT_NAME=xmc
+set BACKUP_DEST=E:\git\xmc
 set TIMESTAMP=%DATE:~10,4%-%DATE:~4,2%-%DATE:~7,2%_%TIME:~0,2%%TIME:~3,2%
 set TIMESTAMP=%TIMESTAMP: =0%
 

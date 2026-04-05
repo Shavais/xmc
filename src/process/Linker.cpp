@@ -4,6 +4,9 @@
 #include "tool/Logger.h"
 #include "data/LinkerData.h"
 
+#include <string>
+#include <algorithm>
+#include <filesystem> 
 
 namespace process
 {
@@ -75,5 +78,69 @@ namespace process
 		}
 
 		CloseHandle(hChildStdOutRead);
+	}
+
+	void GetPathToLink() {
+		namespace fs = std::filesystem;
+		data::PathToLinker.clear();
+
+		// Check if vswhere exists
+		std::string vswherePath = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe";
+		if (!fs::exists(vswherePath)) {
+			oserror << "XMC Error: vswhere.exe not found at " + vswherePath + ". Is Visual Studio installed?" << endl;
+			return;
+		}
+
+		// Run vswhere to find VS installation root
+		std::string command = "\"" + vswherePath + "\" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath";
+
+		std::string vsRoot = "";
+		char buffer[MAX_PATH];
+		FILE* pipe = _popen(command.c_str(), "r");
+
+		if (pipe) {
+			if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+				vsRoot = buffer;
+				vsRoot.erase(vsRoot.find_last_not_of("\r\n") + 1);
+			}
+			_pclose(pipe);
+		}
+
+		if (vsRoot.empty()) {
+			oserror << "XMC Error: vswhere could not find a Visual Studio installation with C++ Build Tools." << endl;
+			return;
+		}
+
+		// Convert backslashes for consistency
+		std::replace(vsRoot.begin(), vsRoot.end(), '\\', '/');
+
+		// Get the default MSVC version string
+		std::string versionFile = vsRoot + "/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt";
+		std::string version = "";
+
+		if (fs::exists(versionFile)) {
+			std::ifstream vFile(versionFile);
+			if (vFile.is_open()) {
+				if (std::getline(vFile, version)) {
+					version.erase(version.find_last_not_of("\r\n") + 1);
+				}
+				vFile.close();
+			}
+		}
+
+		if (version.empty()) {
+			oserror << "Could not determine MSVC version from " << versionFile << endl;
+			return;
+		}
+
+		// Set the final path
+		std::string finalPath = vsRoot + "/VC/Tools/MSVC/" + version + "/bin/Hostx64/x64/link.exe";
+
+		if (fs::exists(finalPath)) {
+			data::PathToLinker = finalPath;
+		}
+		else {
+			oserror << "XMC Error: Linker not found at expected path: " << finalPath << endl;
+		}
 	}
 }

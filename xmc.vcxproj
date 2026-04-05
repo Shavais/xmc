@@ -179,7 +179,7 @@
     <ClInclude Include="src\win32.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="tests\hello\hello.svl" />
+    <None Include="tests\hello\hello.xmc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

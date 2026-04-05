@@ -9,6 +9,9 @@
 #include "process/ProjectFile.h"
 #include "tool/Logger.h"
 
+#include "process/Linker.h"
+#include "data/LinkerData.h"
+
 using namespace process;
 
 int main(int argc, char* argv[])
@@ -19,6 +22,10 @@ int main(int argc, char* argv[])
 		// CallCppFunction();
 		ParseCommandLine(argc, argv);
 		ParseProjectFile();
+
+		process::GetPathToLink();
+		process::RunShellCmd(data::PathToLinker);
+		osdebug << data::ShellCmdLog << endl;
 	}
 	catch (const std::runtime_error& e)
 	{

@@ -1,6 +1,6 @@
 @echo off
-set /p BUNDLE_NAME="svl_2026-04-03_0951.bundle"
-set /p DEST_FOLDER="C:\Shavais\Projects\C++\svl"
+set /p BUNDLE_NAME="xmc_2026-04-03_0951.bundle"
+set DEST_FOLDER="C:\Shavais\Projects\C++\xmc"
 
 echo Restoring %BUNDLE_NAME% into %DEST_FOLDER%...
 

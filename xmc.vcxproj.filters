@@ -97,6 +97,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="tests\hello\hello.svl" />
+    <None Include="tests\hello\hello.xmc" />
   </ItemGroup>
 </Project>

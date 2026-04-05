@@ -24,7 +24,7 @@ int Hello() {
 	memcpy(dataSec.Name, ".data", 6);
 	dataSec.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 
-	std::string msg = "Hello from svl!\n";
+	std::string msg = "Hello from xmc!\n";
 	std::vector<uint8_t> dataBytes(msg.begin(), msg.end());
 	dataBytes.push_back(0); // Null terminator
 	dataSec.SizeOfRawData = (DWORD)dataBytes.size();
@@ -192,7 +192,7 @@ void RunCppFunction()
 	memcpy(dataSec.Name, ".data", 6);
 	dataSec.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 
-	std::string msg = "Hello from svl!\n";
+	std::string msg = "Hello from xmc!\n";
 	std::vector<uint8_t> dataBytes(msg.begin(), msg.end());
 	dataBytes.push_back(0); // Null terminator
 	dataSec.SizeOfRawData = (DWORD)dataBytes.size();
@@ -281,7 +281,7 @@ void CallCppFunction() {
 
 	// 2. Add Data and Symbols
 	// "Hello" string in .data
-	std::string msg = "Hello from svl!\n";
+	std::string msg = "Hello from xmc!\n";
 	std::vector<uint8_t> msgBytes(msg.begin(), msg.end());
 	msgBytes.push_back(0); // Null terminator
 	uint32_t msgSymIdx = coff.AddDataSymbol("msg", dataIdx, msgBytes);

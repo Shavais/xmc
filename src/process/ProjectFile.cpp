@@ -13,7 +13,7 @@
 namespace process
 {
 	void ParseProjectFile() {
-		std::string filename = data::CmdLineArgs.ProjectName + ".svl";
+		std::string filename = data::CmdLineArgs.ProjectName + ".xmc";
 		std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
 		if (!file.is_open()) {
@@ -83,7 +83,7 @@ namespace process
 		}
 
 		if (data::CmdLineArgs.ConfigName.empty()) {
-			oserror << "No configuration specified and no default found in .svl" << std::endl;
+			oserror << "No configuration specified and no default found in .xmc" << std::endl;
 			throw std::runtime_error("Missing configuration");
 		}
 
@@ -110,9 +110,13 @@ namespace process
 
 		// merge the active section with the base section from the raw project file into the effective project file
 		auto& section = data::RawProjectFile.find("base")->second;
+
 		for (const auto& [key, value]: section) data::ProjectFile[key] = value;
-		section = data::RawProjectFile[currentSection];
-		for (const auto& [key, value] : section) data::ProjectFile[key] = value;
+		if (data::RawProjectFile.contains(data::CmdLineArgs.ConfigName))
+		{
+			section = data::RawProjectFile[data::CmdLineArgs.ConfigName];
+			for (const auto& [key, value] : section) data::ProjectFile[key] = value;
+		}
 
 		// write out effective ProjectFile contents:
 		osdebug << "\nmerged ProjectFile: " << std::endl;

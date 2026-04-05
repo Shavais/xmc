@@ -10,7 +10,7 @@ namespace process
 {
 	void ParseCommandLine(int argc, char* argv[]) {
 		if (argc < 2) {
-			oserror << "Usage: svl [projectname] [config] full" << std::endl;
+			oserror << "Usage: xmc [projectname] [config] full" << std::endl;
 			throw std::runtime_error("Project name required.");
 		}
 

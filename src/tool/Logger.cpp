@@ -39,7 +39,7 @@ std::wstring GetProgramDataPath()
 {
 	WCHAR path[MAX_PATH];
 	SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path);
-	return std::wstring(path) + L"\\svl";
+	return std::wstring(path) + L"\\xmc";
 }
 
 void InitializeLogging()
@@ -52,7 +52,7 @@ void InitializeLogging()
 // LogStream - - - - - - - - - - - -
 
 /// <summary>
-/// Creates the folder %TEMP%/svl, if it doesn't exist, and creates or truncates the files log.txt and error.txt in that folder
+/// Creates the folder %TEMP%/xmc, if it doesn't exist, and creates or truncates the files log.txt and error.txt in that folder
 /// </summary>
 /// <returns>null on success, a string error message on failure</returns>
 const string Logger::Init()
