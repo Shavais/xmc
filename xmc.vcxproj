@@ -149,6 +149,7 @@
     <ClCompile Include="src\process\CmdLine.cpp" />
     <ClCompile Include="src\process\Linker.cpp" />
     <ClCompile Include="src\process\ProjectFile.cpp" />
+    <ClCompile Include="src\process\Util.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
     <ClCompile Include="src\experiments.cpp" />
     <ClCompile Include="src\xmc.cpp" />
@@ -159,7 +160,7 @@
     <Text Include="doc\AI dumps.txt" />
     <Text Include="doc\AI_conversation_journal.txt" />
     <Text Include="doc\journal.txt" />
-    <Text Include="doc\The svl programming language.txt" />
+    <Text Include="doc\The xmc programming language.txt" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\data\GlobalData.h" />
@@ -170,6 +171,7 @@
     <ClInclude Include="src\process\CmdLine.h" />
     <ClInclude Include="src\process\Linker.h" />
     <ClInclude Include="src\process\ProjectFile.h" />
+    <ClInclude Include="src\process\Util.h" />
     <ClInclude Include="src\stl.h" />
     <ClInclude Include="src\tool\Coff.h" />
     <ClInclude Include="src\experiments.h" />

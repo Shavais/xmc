@@ -88,24 +88,24 @@ namespace process
 		}
 
 		// write out config file contents:
-		osdebug << "--- SVL Project Data Dump ---" << std::endl;
-		for (auto const& [section, keys] : data::RawProjectFile) {
-			osdebug << "[" << section << "]" << std::endl;
-			for (auto const& [key, value] : keys) {
-				osdebug << "  " << key << " = ";
+		//osdebug << "--- SVL Project Data Dump ---" << std::endl;
+		//for (auto const& [section, keys] : data::RawProjectFile) {
+		//	osdebug << "[" << section << "]" << std::endl;
+		//	for (auto const& [key, value] : keys) {
+		//		osdebug << "  " << key << " = ";
 
-				// Peek at the variant type
-				if (auto pInt = std::get_if<int>(&value)) {
-					osdebug << *pInt << " (int)";
-				}
-				else if (auto pStr = std::get_if<std::string>(&value)) {
-					osdebug << "\"" << *pStr << "\" (string)";
-				}
-				osdebug << std::endl;
-			}
-		}
-		osdebug << "Active Config: " << data::CmdLineArgs.ConfigName << std::endl;
-		osdebug << "-----------------------------" << std::endl;
+		//		// Peek at the variant type
+		//		if (auto pInt = std::get_if<int>(&value)) {
+		//			osdebug << *pInt << " (int)";
+		//		}
+		//		else if (auto pStr = std::get_if<std::string>(&value)) {
+		//			osdebug << "\"" << *pStr << "\" (string)";
+		//		}
+		//		osdebug << std::endl;
+		//	}
+		//}
+		//osdebug << "Active Config: " << data::CmdLineArgs.ConfigName << std::endl;
+		//osdebug << "-----------------------------" << std::endl;
 		//
 
 		// merge the active section with the base section from the raw project file into the effective project file
@@ -119,20 +119,20 @@ namespace process
 		}
 
 		// write out effective ProjectFile contents:
-		osdebug << "\nmerged ProjectFile: " << std::endl;
-		osdebug << "-----------------------------" << std::endl;
-		for (auto const& [key, value] : data::ProjectFile) {
-			osdebug << "  " << key << " = ";
+		//osdebug << "\nmerged ProjectFile: " << std::endl;
+		//osdebug << "-----------------------------" << std::endl;
+		//for (auto const& [key, value] : data::ProjectFile) {
+		//	osdebug << "  " << key << " = ";
 
-			// Peek at the variant type
-			if (auto pInt = std::get_if<int>(&value)) {
-				osdebug << *pInt << " (int)";
-			}
-			else if (auto pStr = std::get_if<std::string>(&value)) {
-				osdebug << "\"" << *pStr << "\" (string)";
-			}
-			osdebug << std::endl;
-		}
+		//	// Peek at the variant type
+		//	if (auto pInt = std::get_if<int>(&value)) {
+		//		osdebug << *pInt << " (int)";
+		//	}
+		//	else if (auto pStr = std::get_if<std::string>(&value)) {
+		//		osdebug << "\"" << *pStr << "\" (string)";
+		//	}
+		//	osdebug << std::endl;
+		//}
 
 	}
 

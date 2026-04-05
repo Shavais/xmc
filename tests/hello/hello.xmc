@@ -5,21 +5,21 @@ EntryFile = hello               # names the .sv file that contains the entry fun
 EntryFunc = main                # names entry point function (defaults to main)
 Subsystem = console
 CRT = static                    # static, dynamic, static-debug, dynamic-debug
-LibPaths = [C:/Windows/System32]
-StaticLibs = [glfw3, openal]
-DynamicLibs = [kernel32, user32, opengl32]
-SourceRoot = src                # optional, the default is the current working directory
+LibPaths = [
+    C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64, 
+    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/ucrt/x64,
+	C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
+]
+StaticLibs = [svge.lib]
+DynamicLibs = [kernel32.lib, shell32.lib]
+SourceRoot = .                  # optional, the default is the current working directory
 
 [debug:default]                 # a config doesn't have to be debug or release, it can have any name
-optimization = 0
-symbols = yes
-libpaths = [deps/x64/Debug]
-intermediate = obj/x64/Debug
-output = bin/x64/Debug
+DebugSymbols = yes
+IntPath = .
+Output = .
 
 [release]
-optimization = 9
-symbols = no
-libpaths = [deps/x64/Release]
-intermediate = obj/x64/Release
-output = bin/x64/Release
+DebugSymbols = no
+IntPath = .
+Output = .

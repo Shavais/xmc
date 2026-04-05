@@ -2,6 +2,8 @@
 
 namespace process
 {
-	void GetPathToLink();
+	void GetPathToLinker();
+	void GetLinkerArgs();
 	void RunShellCmd(const std::string& commandLine);
+
 }

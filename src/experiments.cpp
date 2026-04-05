@@ -310,5 +310,5 @@ void CallCppFunction() {
 	coff.AddRelocation(textIdx, 12, logSymIdx, IMAGE_REL_AMD64_REL32);
 
 	// 5. Write to file
-	coff.WriteTo("tests/hello/hello.obj");
+	coff.WriteTo("hello.obj");
 }

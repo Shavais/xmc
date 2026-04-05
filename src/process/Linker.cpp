@@ -1,12 +1,16 @@
 #include "pch.h"
 #include "Linker.h"
 
-#include "tool/Logger.h"
-#include "data/LinkerData.h"
-
 #include <string>
 #include <algorithm>
 #include <filesystem> 
+
+#include "tool/Logger.h"
+#include "tool/TextParser.h"
+#include "tool/StringFunctions.h"
+#include "data/LinkerData.h"
+#include "data/CmdLineData.h"
+#include "process/ProjectFile.h"
 
 namespace process
 {
@@ -80,7 +84,7 @@ namespace process
 		CloseHandle(hChildStdOutRead);
 	}
 
-	void GetPathToLink() {
+	void GetPathToLinker() {
 		namespace fs = std::filesystem;
 		data::PathToLinker.clear();
 
@@ -142,5 +146,65 @@ namespace process
 		else {
 			oserror << "XMC Error: Linker not found at expected path: " << finalPath << endl;
 		}
+	}
+
+	void GetLinkerArgs() {
+		using namespace process;
+		using namespace data;
+
+		auto AppendFromList = [&](std::string& out, const std::string& key, const std::string& prefix = "", const std::string& defaultExt = "") {
+			std::string raw = GetString(key, "");
+			if (raw.empty()) return;
+
+			TextParser p(raw);
+			p.Skip(" \t\r\n["); // Skip start of list
+
+			while (!p.Empty() && !p.CheckFor(']')) {
+				auto [item, delim] = p.ReadUntil(",]", false);
+
+				// Clean up whitespace/newlines/quotes from the path
+				string_view trimmed = lrtrim(item, " \t\r\n\"");
+
+				if (!trimmed.empty()) {
+					std::string entry(trimmed);
+
+					// Only add extension if one isn't already present
+					if (!defaultExt.empty() && entry.find('.') == std::string::npos) {
+						entry += defaultExt;
+					}
+
+					out += " " + prefix + "\"" + entry + "\"";
+				}
+
+				if (delim == ',') p.Skip(",");
+				p.Skip(" \t\r\n"); // Crucial for multi-line LibPaths
+			}
+			};
+
+		// Build the string
+		std::string args = " /NOLOGO";
+
+		// 1. Subsystem & Entry
+		args += " /SUBSYSTEM:" + GetString("subsystem", "CONSOLE");
+		args += " /ENTRY:mainCRTStartup";
+
+		// 2. CRT Selection (Maps to your working set)
+		std::string crt = Lowercase(GetString("crt", "static"));
+		if (crt == "static" || crt == "static-debug") {
+			// Since your current manual test uses debug libs:
+			args += " libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib";
+			args += " /NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib";
+		}
+
+		// 3. Process the .xmc lists
+		AppendFromList(args, "libpaths", "/LIBPATH:");
+		AppendFromList(args, "staticlibs");  // No default ext needed, you have .obj in xmc
+		AppendFromList(args, "dynamiclibs"); // No default ext needed, you have .lib in xmc
+
+		// 4. Primary Input
+		args += " " + data::CmdLineArgs.ProjectName + ".obj";
+		args += " /OUT:\"" + CmdLineArgs.ProjectName + ".exe\"";
+
+		data::LinkerArgs = args;
 	}
 }

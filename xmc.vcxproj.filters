@@ -42,9 +42,12 @@
     <ClCompile Include="src\process\Linker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\process\Util.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="doc\The svl programming language.txt" />
+    <Text Include="doc\The xmc programming language.txt" />
     <Text Include="doc\AI dumps.txt" />
     <Text Include="doc\AI_conversation_journal.txt" />
     <Text Include="doc\journal.txt" />
@@ -93,6 +96,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\data\LinkerData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\process\Util.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

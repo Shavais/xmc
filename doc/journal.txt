@@ -62,7 +62,7 @@ It may be completely unrealistic, but let's see how close we can get. If we don'
 
 - this weekends goal: Get xmc calling link
 
-sample config:
+sample config:  [fixed up on 04/05/2026]
 
 [base]                          # base config, overriden by the default or the selected config
 Arch = x64
@@ -71,30 +71,48 @@ EntryFile = hello               # names the .sv file that contains the entry fun
 EntryFunc = main                # names entry point function (defaults to main)
 Subsystem = console
 CRT = static                    # static, dynamic, static-debug, dynamic-debug
-LibPaths = [C:/Windows/System32]
-StaticLibs = [glfw3, openal]
-DynamicLibs = [kernel32, user32, opengl32]
-SourceRoot = src                # optional, the default is the current working directory
+LibPaths = [
+    C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64, 
+    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/ucrt/x64,
+	C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
+]
+StaticLibs = [svge.lib]
+DynamicLibs = [kernel32.lib, shell32.lib]
+SourceRoot = .                  # optional, the default is the current working directory
 
 [debug:default]                 # a config doesn't have to be debug or release, it can have any name
-optimization = 0
-symbols = yes
-libpaths = [deps/x64/Debug]
-intermediate = obj/x64/Debug
-output = bin/x64/Debug
-crtlib = 
+DebugSymbols = yes
+IntPath = .
+Output = .
 
 [release]
-optimization = 9
-symbols = no
-libpaths = [deps/x64/Release]
-intermediate = obj/x64/Release
-output = bin/x64/Release
+DebugSymbols = no
+IntPath = .
+Output = .
 
+Original working link command from the Developer Command Prompt:
 
 link /subsystem:console /entry:mainCRTStartup ^
 hello.obj logger.obj pch.obj ^
 libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib ^
 kernel32.lib shell32.lib ^
 /NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib
+
+project time line
+
+april   - simple types, operators, assignments, morphing to virtual and arc virtual
+may     - struct, list, list comprehensions, queue, stack, map, hashset, the rest of the morphs
+june    - hashmap, scopes (global, namespace, module, function, class) function, class, arena, pool, heap
+august      - 
+september   -
+november    -
+december
+
+
+==========
+04/05/2026
+
+The link command above doesn't work from the child process created by the xcm because it isn't inheriting the environment, which is good, 
+because generally, xcm probably won't be run from such a place. Here's a hardcoded version of the link command that worked from inside the program:
+
 

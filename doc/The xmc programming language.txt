@@ -1,5 +1,5 @@
 
-The svl programming language
+The xmc programming language
 
 1. AOT Compilation
 
@@ -18,35 +18,35 @@ The svl programming language
 - Code can be put into namespaces, but when referencing something, its namespace path only needs to be specified when there is ambiguity otherwise.
 - The translation unit (source code file) name is an optionally-specified first segment of a namespace path, so classes or functions of the same name can exist at the root of different files.
 - Namespace path prefixes can be shortened to the shortest set of segments that eliminates ambiguity.
-- Object files (.svo) are created for translation units during compilation to speed up future compilation, but they may get recompiled if new code produces inferred type morphing.
+- Object files (.xmo) are created for translation units during compilation to speed up future compilation, but they may get recompiled if new code produces inferred type morphing.
 
 4. Project Based Build System
 
-An svl target is either an executable, a static library or a dynamic library.
+An xmc target is either an executable, a static library or a dynamic library.
 
-An invocation of the svl command line compiler reads like this:
+An invocation of the xmc command line compiler reads like this:
 
-svl projectname config
+xmc projectname config
 
-eg. svl hello debug
+eg. xmc hello debug
 
-There is a project file which is a [projectname].svl file. (eg. hello.svl) 
-The source code is in .sv files. 
+There is a project file which is a [projectname].xmc file. (eg. hello.xmc) 
+The source code is in .xm files. 
 A root folder for the source tree can be specified in the project file. 
 A root folder for the intermediate files must be specified.
-The source folder tree is duplicated by the compiler under the intermediate root folder, and a .svo file is created for each .sv file in the source folder tree.
+The source folder tree is duplicated by the compiler under the intermediate root folder, and a .xmo file is created for each .xm file in the source folder tree.
 A single linkable (.obj, on windows) is created for a target, in the intermediate root, of the same name as the project file. (eg., hello.obj)
 The platform linker is invoked by the compiler (for now).
 The compiler places a single linked target output (.exe, etc.) in the output folder specified in the project file.
 
-The projectname.svl file:
+The projectname.xmc file:
 
 _________
-# sample svl Project File (hello.svl)
+# sample xmc Project File (hello.xmc)
 [base]                          # base config, overriden by the default or the selected config
 Arch = x64
 Type = exe
-EntryPoint = hello:main         # names the .sv file and the entry point function
+EntryPoint = hello:main         # names the .xm file and the entry point function
 Subsystem = console
 CRT = static                    # static, dynamic, static-debug, dynamic-debug
 LibPaths = C:/Windows/System32
@@ -102,15 +102,19 @@ atomic  - qualifier that yields an atomic versions of the simple type (this is a
 built in structures and objects:
 
 struct      - no functions
-class
 list
 queue
 stack
 map         - binary tree
 hashset     
 hashmap
+function
+class
+arena
+pool
+heap
 (others to be determined)
-funcptr
+
 
 concurrent - qualifier that yields a concurrent version of a container (this is also a hint).
 
