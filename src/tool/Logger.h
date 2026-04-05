@@ -15,7 +15,7 @@ void InitializeLogging();
 class Logger : public std::streambuf
 {
 public:
-	Logger(std::ofstream* out);
+	Logger(std::ofstream* out, bool isErrorStream = false); 
 	~Logger();
 
 	static const std::string Init();
@@ -25,7 +25,9 @@ private:
 	virtual int_type overflow(int_type c) override;
 	virtual int sync() override;
 
+private:
 	std::ofstream* output_;
+	bool isError_; 
 };
 
 extern std::ostream osdebug;

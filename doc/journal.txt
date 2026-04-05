@@ -8,6 +8,7 @@ x   - post the latest .h and .cpp for review
 x   - implement the Write function
 x   - create an experiments::CallCppFunction that uses the Coff class
 
+Here's the link command that ended working:
 
 link /subsystem:console /entry:mainCRTStartup ^
 test2.obj logger.obj pch.obj ^
@@ -15,23 +16,85 @@ libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib ^
 kernel32.lib shell32.lib ^
 /NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib
 
-
 ==========
 04/02/2026
 
-x   - make a tests folder and get the output going into a hello subfolder of the tests folder
+x   - make a tests folder and get the current output (the hello.obj) going into a hello subfolder of the tests folder
 x   - make a shortcut on the desktop for the developer command line that sets the working directory to the tests folder
 x   - clean up the solution root folder
 
-o   - create a hello.svl project file in tests/hello
-o   - create a hello.sv file in tests/hello/src with a Main(){..} function that calls SVGE_Log("hello from svl!");
-
     - in svl:
-        - parse the command line, print out errors if the command line is invalid
-        - parse the project file, print out errors if the project file is invalid
-        - walk the source tree from the root folder specified in the project file, parsing .sv files in parallel
-        - for each .sv..
-            - parse the file into a parse tree for the file, print out syntax errors
-            - support the defining of functions that have no parameters or take a char* (referred to in svl as zs8)
-            - support calling functions and passing no parameters or passing a literal zs8
+x       - copy Logger.h/cpp into the tool folder
+x       - edit Logger.h/cpp as appropriate to port it from the svge project into the svl project
+x       - put some temporary test lines into svl to exercise debug and errlog and get that working when compoiled in Debug and Release modes       
+x       - copy stl.h and win32.h from the svge project
+x       - edit win32.h and remove unneeded libraries, etc.
+x       - create pch.h and pch.cpp and include stl.h and win32.h in it
+x       - create data/CmdLineData.h, process/CmdLine.cpp, and CmdLine.h and include them in the project
+x       - get the project using pch.h as a precompiled header, get pch.cpp creating it, and put it at  the top of all the .cpp files
+x       - get the refactored program compiling and working [I put the link command into a linkhello.bat file in tests/hello]
+x       - write code to..
+x           - define and declare the command line data
+x           - parse the command line, print out errors and stop if the command line is invalid
+x       - create a hello.svl project file in tests/hello
+        - write code (in data and process) to..
+x           - parse the project file, print out errors and stop if the project file format is invalid
+            - temporary test: execute the linker using libraries and settings identified in the project file            
+            - walk the source tree from the root folder specified in the project file, parsing .sv files in parallel
+            - create a hello.sv file in tests/hello/src with a Main(){..} function that calls SVGE_Log("hello from svl!");
+            - for each .sv..
+                - parse the file into a parse tree for the file, print out syntax errors
+                - support the defining of functions that have no parameters or take a char* (referred to in svl as zs8)
+                - support calling functions and passing no parameters or passing a literal zs8
     
+
+==========
+04/03/2026
+
+- goal: Be repairing ship damage in svl za by Christmas '26
+
+I'm setting a goal of reaching a point with svl za (ZoneAssualt written in svl) where I'm flying a ship around and repairing damage done to the ship by enemy ships by 12/25/2026.
+It may be completely unrealistic, but let's see how close we can get. If we don't make it, we'll set another goal and maybe that one will be more realistic.
+
+
+==========
+04/04/2026
+
+- this weekends goal: Get xmc calling link
+
+sample config:
+
+[base]                          # base config, overriden by the default or the selected config
+Arch = x64
+Type = exe
+EntryFile = hello               # names the .sv file that contains the entry function (defaults to the project name)
+EntryFunc = main                # names entry point function (defaults to main)
+Subsystem = console
+CRT = static                    # static, dynamic, static-debug, dynamic-debug
+LibPaths = [C:/Windows/System32]
+StaticLibs = [glfw3, openal]
+DynamicLibs = [kernel32, user32, opengl32]
+SourceRoot = src                # optional, the default is the current working directory
+
+[debug:default]                 # a config doesn't have to be debug or release, it can have any name
+optimization = 0
+symbols = yes
+libpaths = [deps/x64/Debug]
+intermediate = obj/x64/Debug
+output = bin/x64/Debug
+crtlib = 
+
+[release]
+optimization = 9
+symbols = no
+libpaths = [deps/x64/Release]
+intermediate = obj/x64/Release
+output = bin/x64/Release
+
+
+link /subsystem:console /entry:mainCRTStartup ^
+hello.obj logger.obj pch.obj ^
+libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib ^
+kernel32.lib shell32.lib ^
+/NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib
+

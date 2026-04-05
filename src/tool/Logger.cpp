@@ -1,12 +1,14 @@
-﻿#include "Logger.h"
+﻿#include "pch.h"
+#include "Logger.h"
 
 #include <string>
 #include <iostream>
 #include <ostream>
 #include <fstream>
 #include <filesystem>
-
 #include <shlobj.h>
+
+#include "data/GlobalData.h"
 
 namespace fs = std::filesystem;
 
@@ -19,8 +21,8 @@ bool StopLogger = false;
 static ofstream debug_file;
 static ofstream error_file;
 
-static Logger debug_stream(&debug_file);
-static Logger error_stream(&error_file);
+static Logger debug_stream(&debug_file, false);
+static Logger error_stream(&error_file, true);
 
 ostream osdebug(&debug_stream);
 ostream oserror(&error_stream);
@@ -84,10 +86,8 @@ const string Logger::Init()
 	return "";
 }
 
-Logger::Logger(ofstream* out)
-{
-	output_ = out;
-}
+Logger::Logger(std::ofstream* out, bool isErrorStream) : output_(out), isError_(isErrorStream) {}
+
 Logger::~Logger()
 {
 }
@@ -95,12 +95,17 @@ Logger::~Logger()
 std::streamsize Logger::xsputn(const char_type* s, std::streamsize n)
 {
 	if (StopLogger) return 0;
-	string input(s, n);
+
+	if (isError_ && n > 0) data::ErrorOccurred = true;
+
+	std::string input(s, n); 
+
 	OutputDebugStringA(input.c_str());
-	if (output_ && output_->is_open())
-	{
-		output_->write(input.c_str(), input.length());
-	}
+	if (output_ && output_->is_open()) output_->write(input.c_str(), n);
+	
+	if (isError_) std::cerr.write(s, n);
+	else std::cout.write(s, n);
+
 	return n;
 }
 
@@ -116,7 +121,11 @@ std::streambuf::int_type Logger::overflow(int_type c)
 int Logger::sync()
 {
 	if (StopLogger) return 0;
-	output_->flush();
+	if (output_ && output_->is_open()) output_->flush();
+
+	if (isError_) std::cerr.flush();
+	else std::cout.flush();
+
 	return 0;
 }
 

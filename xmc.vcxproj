@@ -24,6 +24,7 @@
     <ProjectGuid>{b6905296-e566-4fce-a9c3-f12272e83cb3}</ProjectGuid>
     <RootNamespace>svl</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>xmc</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -70,6 +71,14 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -105,6 +114,8 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
       <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -122,6 +133,8 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
       <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -129,11 +142,18 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\data\model.cpp" />
+    <ClCompile Include="src\pch.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\process\CmdLine.cpp" />
+    <ClCompile Include="src\process\Linker.cpp" />
+    <ClCompile Include="src\process\ProjectFile.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
     <ClCompile Include="src\experiments.cpp" />
-    <ClCompile Include="src\svl.cpp" />
+    <ClCompile Include="src\xmc.cpp" />
     <ClCompile Include="src\tool\Logger.cpp" />
+    <ClCompile Include="src\tool\StringFunctions.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\AI dumps.txt" />
@@ -142,13 +162,24 @@
     <Text Include="doc\The svl programming language.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\data\model.h" />
+    <ClInclude Include="src\data\GlobalData.h" />
+    <ClInclude Include="src\data\LinkerData.h" />
+    <ClInclude Include="src\data\ProjectFileData.h" />
+    <ClInclude Include="src\pch.h" />
+    <ClInclude Include="src\data\CmdLineData.h" />
+    <ClInclude Include="src\process\CmdLine.h" />
+    <ClInclude Include="src\process\Linker.h" />
+    <ClInclude Include="src\process\ProjectFile.h" />
+    <ClInclude Include="src\stl.h" />
     <ClInclude Include="src\tool\Coff.h" />
     <ClInclude Include="src\experiments.h" />
     <ClInclude Include="src\tool\Logger.h" />
+    <ClInclude Include="src\tool\StringFunctions.h" />
+    <ClInclude Include="src\tool\TextParser.h" />
+    <ClInclude Include="src\win32.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\testproject.svl" />
+    <None Include="tests\hello\hello.svl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -330,7 +330,7 @@ Generational Retirement: drain() retires active memory segments while allowing n
 
 5. Build System & Project Structure
 
-File Layout: .svl (Project Configuration), .sv (Source), .svo (Intermediate Objects)
+File Layout: .svl (Project Configuration), .sv (Source), .xmo (Intermediate Objects)
 Namespacing: Filenames act as the first segment of a namespace path. Paths can be shortened to the minimum unique segment.
 Compiler CLI: svl [projectname] [config] (e.g., svl hello debug).
 
@@ -380,7 +380,7 @@ If you can get an AI to help you build a working Bootstrap Compiler that proves 
 
 ---
 
-The question about morphic inference and .svo's is an excellent question that I was recently mulling over. On the one hand, I'd like to minimize recompilation where possible. On the other, I don't want to constrain morphic inference. I think if you have .svo's, you have the source, so, if it turns out that something an a .svo needs to be morphed, that translation unit will just have to be recompiled. In fact that may cascade to other units. But I think that's part of the cost of doing business in morphic inference land. The good thing is, you only pay that cost once.
+The question about morphic inference and .xmo's is an excellent question that I was recently mulling over. On the one hand, I'd like to minimize recompilation where possible. On the other, I don't want to constrain morphic inference. I think if you have .xmo's, you have the source, so, if it turns out that something an a .xmo needs to be morphed, that translation unit will just have to be recompiled. In fact that may cascade to other units. But I think that's part of the cost of doing business in morphic inference land. The good thing is, you only pay that cost once.
 
 ---
 ..
@@ -569,7 +569,7 @@ raw sz8 k := mylist[i];     - k is a raw pointer to the i'th element of mylist w
 The Shared Pointer "Pivot": When d := mylist[i] happens, the compiler has to go back and "rewrite" the accessors for mylist. In your generated machine code, a simple mov (load) becomes a lock xadd (atomic increment) or a call to a retain function.
 
 A Quick Wrinkle on weak:
-If f makes the elements of mylist "weak referenceable" (upgrading them to shared pointers), does that upgrade happen globally for that list type in the project, or just for that specific instance? (Given your .svo recompilation strategy, it seems you're fine with a global upgrade to ensure binary compatibility).
+If f makes the elements of mylist "weak referenceable" (upgrading them to shared pointers), does that upgrade happen globally for that list type in the project, or just for that specific instance? (Given your .xmo recompilation strategy, it seems you're fine with a global upgrade to ensure binary compatibility).
 Proactive Follow-up: Since you're targeting Windows first, should we define a Standard Heap (e.g., process_heap) that acts as the default catch-all for these assignments, or should every heap be explicitly named by the developer?
 <<<
 
@@ -642,28 +642,27 @@ Ok, now about the cascading re-scanning question..
 
 - incremental compilation
 
-So we have these .svo files that have the declared things, their types and their refinements, and indexed blocks of emitted machine code for the unit.
+So we have these .xmo files that have the declared things, their types and their refinements, and indexed blocks of emitted machine code for the unit.
 So if one file is modified and no other files are dependent on it, only that file would need to be parsed.
-We wouldn't even need to load or parse the source for any other units, just their .svo's.
-The .obj can be reconstitued from the .svo's. 
-In fact that's how it's constituted to begin with; the svo's are produced in memory, then the .obj is pieced together from the svo's.
+We wouldn't need to load or parse the source for any other units, just their .xmo's.
+The .obj can be reconstitued from the .xmo's. 
+In fact that's how it's constituted to begin with; the xmo's are produced in memory, then the .obj is pieced together from the xmo's.
 
-Now.. if all we're doing is changing refinement masks.. .. we can reconstitute an svo without parsing the source code at all.
-
-But the question is, can we determine if morphing a type needs to cause another type to morph just from the svo?
+Now, if all we're doing is changing refinement masks, we can reconstitute a .obj without parsing the source code at all.
+But the question is, can we determine if morphing a type of something needs to cause something else's type to morph from just the xmo?
 I think we need the parse tree for that. 
-Well.. what if we saved the parse tree in the svo? That part of the svo wouldn't need to be loaded unless we needed it, but it could be loaded if we do.
+So, the parse trees are also saved in the .xmo files, but that part of an xmo wouldn't need to be loaded unless we need it.
 
 Ok, so how about this:
 
-We have to load the non-parse-tree parts of all the svo's in order to reconstitute the .obj. 
-If none of the morphs in any of the modified files need to morph anything in any of the unmodified files, we're golden. No need to load the parse trees
-for the svo's of the unmodified files.
-If any morph chain cascades into any unmodified file, then we have to load all the parse trees from all the svo's, and rescan the whole set to redetermine
-all the refinement masks. svo's that are altered in that process are saved at the end of the compilation process. svo's that aren't don't need to be saved. 
+The symbols, their types, their refinements, and the indexed machine code blocks are loaded from all the .xmo's in the project.
+The memory buffer for an .xmo is sized so that the entire .xmo can be loaded if needed.
+The source code is loaded from the modified units.
+The parse trees are regenerated for the modified units, and the symbol tables with default refinements are generated.
+A single scan of all the loaded parse trees is performed and symbol refinements are morphed upward from the defaults to their lowest required refinement levels above the defaults.
+If a symbol from an unmodified file needs to be morphed, that triggers a load of all the parse trees for all the xmo's, and a single scan of all them to remorph all the symbol refinements.
+The xmo's that are altered are saved at the end of the compilation process. The xmo's that aren't altered don't need to be saved. 
 
-But we only need to do two scans - one to determine whether or not we need a full scan, and if so, then one full scan of the parse trees in the svos.
-And morphs don't need to trigger any reparsing. Just rebuilding of svo's.
 
 - subtypes
 

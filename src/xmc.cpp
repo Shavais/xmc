@@ -1,14 +1,24 @@
-#include "experiments.h"
-#include "tool/Logger.h"
+#include "pch.h"
 
 #include <iostream>
 
-int main() 
+//#include "experiments.h"
+
+#include "data/CmdLineData.h"
+#include "process/CmdLine.h"
+#include "process/ProjectFile.h"
+#include "tool/Logger.h"
+
+using namespace process;
+
+int main(int argc, char* argv[])
 {
 	try
 	{
 		InitializeLogging();
-		CallCppFunction();
+		// CallCppFunction();
+		ParseCommandLine(argc, argv);
+		ParseProjectFile();
 	}
 	catch (const std::runtime_error& e)
 	{

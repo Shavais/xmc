@@ -43,40 +43,46 @@ The projectname.svl file:
 
 _________
 # sample svl Project File (hello.svl)
+[base]                          # base config, overriden by the default or the selected config
+Arch = x64
+Type = exe
+EntryPoint = hello:main         # names the .sv file and the entry point function
+Subsystem = console
+CRT = static                    # static, dynamic, static-debug, dynamic-debug
+LibPaths = C:/Windows/System32
+StaticLibs = [glfw3, openal]
+DynamicLibs = [kernel32, user32, opengl32]
+SourceRoot = src                # optional, the default is the current working directory
 
-arch: x64
-type: exe
-entry: hello:main       # names the .sv file and the entry point function
-subsystem: console
-crt: static             # options: static, dynamic, static-debug, dynamic-debug
-
-libpaths:
-    C:/Windows/System32
-
-static-libs: glfw3 openal
-dynamic-libs: kernel32 user32 opengl32
-
-source: src
-
-[debug]                 # a config doesn't have to be debug or release, it can have any name
-
-optimization: 0
-symbols: yes
-libpaths:
-    deps/x64/Debug
-
-intermediate: obj/x64/Debug
-output: bin/x64/Debug
+[debug:default]                 # a config doesn't have to be debug or release, it can have any name
+optimization = 0
+symbols = yes
+libpaths = deps/x64/Debug
+intermediate = obj/x64/Debug
+output = bin/x64/Debug
 
 [release]
-optimization: 9
-symbols: no
-libpaths:
-    deb/x64/Release
-
-intermediate: obj/x64/Release
-output: bin/x64/Release
+optimization = 9
+symbols = no
+libpaths = [deps/x64/Release]
+intermediate = obj/x64/Release
+output = bin/x64/Release
 ---------
+
+data/ProjectData.h
+
+using ConfigSection = std::unordered_map<std::string, std::variant<std::string, int>>;
+inline std::unordered_map<std::string, ConfigSection> ProjectData;
+
+process/Project.h
+
+void ParseProjectFile(int argc, char* argv[]);           // prints an error with the line and character of a formatting problem
+    private to process/Project.cpp : bool ValidateConfigData();      // prints an error for required keys that aren't present in the base config, prints errors for invalid keys or values
+
+variant<string, int> GetConfigValue(const string& key);   // if not found (in either default or base section) logs an error, sets data::errorflag and returns ""
+int GetConfigValueInt(const string& key);                 // " " .. and returns 0
+string GetConfigValueStr(const string& key);              // " " .. and return ""
+
 
 5. Compile Time Inferred Type Morphing
 
@@ -300,9 +306,9 @@ okidokey := MyObj.Create()  - The MyObj in okidokey becomes a shared pointer (or
 other.Set(okidokey)         - If Set takes a specific type that is not in okidokey's union, this passes a null value of that type into the function.
                               If Set takes a var, any operators used in Set may morph their lvalues.
 
-onemore := okidokey         - if onemore is a var, it becomes a shared pointer to a tagged union, and okidokey is unaltered. 
+onemore := okidokey         - if onemore is a var, it becomes a shared pointer to a tagged union, and okidokey becomes a shared pointer if it wasn't already. 
                               If onemore is a specific type that isn't in okidokey's tagged union, its value becomes null and okidokey is unaltered: 
-                              Assignment (and other operators) don't morph the right side.
+                              Assignment (and other operators) don't morph the right side except to make them into shared pointers when called for.                
 
 
 Passing things into functions may morph things inside those functions, but it does not morph what you're passing into it.
