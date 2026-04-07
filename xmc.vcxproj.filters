@@ -101,6 +101,9 @@
     <ClInclude Include="src\process\Util.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\data\CompilerData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\hello\hello.xmc" />

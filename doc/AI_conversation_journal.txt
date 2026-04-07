@@ -642,18 +642,18 @@ Ok, now about the cascading re-scanning question..
 
 - incremental compilation
 
-So we have these .xmo files that have the declared things, their types and their refinements, and indexed blocks of emitted machine code for the unit.
+XMC compilation of a project produces a single .obj for that target. The .xmo files exist to speed up incremental compilation.
+So we have these .xmo files that have the declared things, their types and their refinements, and indexed blocks of emitted machine code for the module.
 So if one file is modified and no other files are dependent on it, only that file would need to be parsed.
 We wouldn't need to load or parse the source for any other units, just their .xmo's.
 The .obj can be reconstitued from the .xmo's. 
 In fact that's how it's constituted to begin with; the xmo's are produced in memory, then the .obj is pieced together from the xmo's.
 
-Now, if all we're doing is changing refinement masks, we can reconstitute a .obj without parsing the source code at all.
+If all we're doing is changing refinement masks, we can reconstitute a .obj without parsing the source code at all.
 But the question is, can we determine if morphing a type of something needs to cause something else's type to morph from just the xmo?
-I think we need the parse tree for that. 
-So, the parse trees are also saved in the .xmo files, but that part of an xmo wouldn't need to be loaded unless we need it.
+For this reason, the concluded parse trees from the previous compilation are also saved in the .xmo files, but that part of an xmo wouldn't need to be loaded unless we need it.
 
-Ok, so how about this:
+So here's the compilation process:
 
 The symbols, their types, their refinements, and the indexed machine code blocks are loaded from all the .xmo's in the project.
 The memory buffer for an .xmo is sized so that the entire .xmo can be loaded if needed.
@@ -799,4 +799,96 @@ If a funcptr that points at a [MainThreadOnly] function is called from a [SpawnC
 Functions also have a [NotThreadSafe] attribute. If a function accesses a static or a global, it's marked [NotThreadSafe].
 
 Sometimes functions carry temporary attributes at run time. A function that 
+
+
+----
+
+
+Here's how I envision the process:
+
+    GetModifiedSourcePaths          - populates a list of modified .xm paths and their associated .xmo paths
+        WalkFsTree                  - walks a filesystem tree under a specified parent folder, returns the file modtimes and relative pathnames that match a specified mask 
+    LoadModifiedSources             - loads the source files and fully loads .xmo files where either the .xmo doesn't exist or the mod time of the source file > .xmo mod time
+    ParseModifiedSources            - creates a parse tree and a symbol table for each loaded .xm, marking up symbol refinements in the process;
+                                        when symbols of a .xmo are created or modified, that marks that .xmo as dirty
+                                        if a refinement of a symbol that hasn't been loaded is required, a flag is set indicateding a full scan is required
+  if a full scan is required:
+    LoadXmos                        - loads all the parse trees of the currently loaded .xmo's, and everything from the .xmo's of the unmodified .xm's
+    FullScan                        - sets all symbol refinements to 0 and scans all the parse trees and marks up all symbol refinements, 
+                                        marking .xmo's as dirty whose symbol tables are modified by this process  
+  if no full scan is requried:
+    LoadPartialXmos                 - loads the machine code blocks for all the .xmo's that aren't already loaded 
+  either way:
+    UpdateXmoCode                   - builds the machine code blocks of Xmos that were of the loaded parse trees
+    SaveXmos                        - saves dirty xmo's
+    WriteCoffFile                   - write the output coff file
+
+The above processes can be parallelized to some extent, I think, although I may end up limiting the number of threads running at a time to prevent CPU overheating:
+
+GetModifiedSourcePaths can launch a thread for the source folder tree where the xm's are and another thread for the intermediate folder where the xmo's are.
+WalkFsTree can launch a thread per folder and the wait for those threads to complete 
+LoadModifiedSources can launch a thread per file (and wait for those threads to complete).
+ParseModifiedSources can launch a thread per file.
+LoadXmos can launch a thread per file.
+FullScan can launch a thread per file.
+LoadPartialXmos can launch a thread per file.
+UpdateXmoCode can launch a thread per xmo.
+SaveXmos can launch a thread per xmo.
+WriteCoffFile has to be single threaded.
+
+
+I'm trying to imagine how the process of producing the machine code from the parse tree information is going to work.
+A given block of machine code has placeholders in it..
+
+<<<
+
+when writing out a COFF file, what are the different types of placeholders that need to be filled in?
+
+>>>
+
+When writing a Common Object File Format (COFF) file, you must populate placeholders within the file header, optional header, section headers, raw data, relocation entries, and the symbol/string tables. These fields define the machine type, memory layout, section contents, and symbol addresses needed for linking or execution. 
+
+Key placeholders that must be filled in include:
+
+File Header:
+
+Machine Type: The target architecture (e.g., x86, x64, ARM).
+Section Count: The number of sections following the headers.
+Timestamp: Time the file was created.
+Symbol Table Offset & Count: Pointers to the symbol table location and number of entries.
+Optional Header Size: Size of the optional header (0 if not present).
+Flags: Characteristics of the file (e.g., executable, object).
+
+Optional Header (if present):
+
+Entry Point Address: Address where execution starts.
+Image Base: Preferred base address in memory.
+Section Alignment/File Alignment: Data alignment constraints.
+Section Headers (One for each section):
+Name: String name (e.g., .text, .data, .bss).
+Virtual/Physical Address: Location where the section is loaded.
+Size of Raw Data: Size of initialized code/data.
+Pointer to Raw Data: Offset to data in the file.
+Pointer to Relocations/Line Numbers: Offsets to these tables.
+
+Raw Data (Sections):
+
+Executable/Data Payload: Actual binary code or data.
+
+Relocation Information:
+
+Virtual Address: Address of the item requiring relocation.
+Symbol Table Index: Index of the referenced symbol.
+Type: Relocation type (e.g., absolute, relative).
+
+Symbol Table:
+
+Symbol Name: 8-byte string or 4-byte offset into the String Table.
+Value: Symbol value (e.g., address).
+Section Number: The section index the symbol belongs to.
+Type & Storage Class: Type of symbol (function, variable) and scope.
+
+String Table:
+
+Long Names: Symbol names exceeding 8 bytes
 

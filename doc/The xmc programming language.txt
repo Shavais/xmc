@@ -126,27 +126,29 @@ When you first declare a built-in structure or object, it is assumed to be immut
 materialized (contains no pointers, is contiguous and aligned), and non-concurrent.
 
 If you change it or its contents, it becomes mutable. 
-If you add elements to it it becomes resizeable.
-If you do something that requires something in it to be reference counted, it becomes virtual (contains shared pointers) and might become non-contiguous.
-If you put something in it that is of a different type than what is already in it, it becomes virtual and heterogenous (containing pointers to different types).
+If you add elements to it (assuming its a container of some sort) it becomes resizeable.
+If you reference assign to it becomes virtual (becomes a pointer) and if you reference assign to an element in it, its elements become virtual.
+If you put an element in it that is of a different type than the elements that are already in it, it becomes heterogenous (containing pointers to different types).
 If you add a new member to it, it becomes dynamic (dynamic composition; supporting adding and removing members at run time).
-If you pass a reference to it across a thread boundary, it becomes concurrent.
+If its referenced across thread boundaries, it becomes concurrent (or atomic).
+If you assign a value of a different type to it, it becomes a variant (a tagged union).
 
 There is a refinement bitmask associated with each typed symbol:
 
-    Immutable           | Mutable           - does anything change it?
+    Immutable           | Mutable           - does anything change its value? (thing = or thing := or thing +=, etc.)
     Fixed               | Resizable         - does anything add or remove elements from it?
     Materialized        | Virtual           - are there any reference assignments?
     Raw                 | Arc               - are there are non-raw-qualified reference assignments?
     Homogenous          | Heterogenous      - are different typed elements added into it?
-    Rigid               | Fluid             - does anything ascribe attributes to it that it doesn't initially posess?
+    Rigid               | Fluid             - does anything add attributes ("thing.someAttribute = ") to it that it doesn't initially posess?
     Serial              | Concurrent        - is it non-locally accessed from a spawn block?
+    Singular            | Variant           - is this a var (not a specific type) and is it assigned to a value of more than one type?
 
 For parameter refinement markers in function signatures, the Serial vs Concurrent bit has a slightly different meaning:
 
     Serial              | Concurrent        - does this function access this parameter from a spawn block or call any function that does?
 
-In this way, a programmer can write very fast code in hot paths, and convenient code everywhere else.
+In this way, a programmer can write very fast code in hot paths, and very ergonomic code everywhere else.
 
 var is a way to declare and potentially initialize a variable that infers its type.
 
@@ -328,7 +330,7 @@ zs16 s = c;                 - s remains an zs16, and it now contains a single c1
 
 
 
-7. Ergonomic Error Handling
+10. Ergonomic Error Handling
 
 a. The error Type
 

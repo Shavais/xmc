@@ -163,6 +163,7 @@
     <Text Include="doc\The xmc programming language.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\data\CompilerData.h" />
     <ClInclude Include="src\data\GlobalData.h" />
     <ClInclude Include="src\data\LinkerData.h" />
     <ClInclude Include="src\data\ProjectFileData.h" />
