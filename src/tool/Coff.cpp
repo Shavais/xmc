@@ -62,6 +62,23 @@ void Coff::SetSymbolName(RawSymbol& sym, const std::string& name) {
 	}
 }
 
+uint32_t Coff::PushRawSymbol(const RawSymbol& sym) {
+	symbols_.push_back(sym);
+	return static_cast<uint32_t>(symbols_.size() - 1);
+}
+
+uint32_t Coff::DefineSymbol(const std::string& name, uint32_t value, uint16_t sectionIdx, uint8_t storageClass) {
+	RawSymbol sym = { 0 };
+	SetSymbolName(sym, name);
+	sym.Value = value;
+	sym.SectionNumber = sectionIdx;
+	sym.StorageClass = storageClass;
+	sym.NumberOfAuxSymbols = 0;
+	sym.Type = 0; // Default to 'no type'
+
+	return PushRawSymbol(sym);
+}
+
 // returns the 1-based section index
 uint16_t Coff::CreateSection(const std::string& name, SectionType type) {
 	IMAGE_SECTION_HEADER sh = { 0 };
@@ -96,6 +113,14 @@ uint16_t Coff::CreateSection(const std::string& name, SectionType type) {
 	return (uint16_t)sections_.size();
 }
 
+uint32_t Coff::GetSectionBufferSize(uint16_t sectionIdx) {
+	// sectionIdx is 1-based
+	if (sectionIdx > 0 && sectionIdx <= sectionBuffers_.size()) {
+		return static_cast<uint32_t>(sectionBuffers_[sectionIdx - 1].size());
+	}
+	return 0;
+}
+
 void Coff::AddRelocation(uint16_t sectionIdx, uint32_t offset, uint32_t symbolIdx, uint16_t type) {
 	IMAGE_RELOCATION rel = { 0 };
 	rel.VirtualAddress = offset;     // Offset within the section data
@@ -109,178 +134,103 @@ void Coff::AddRelocation(uint16_t sectionIdx, uint32_t offset, uint32_t symbolId
 	sections_[sectionIdx - 1].NumberOfRelocations++;
 }
 
-void Coff::WriteTo(const std::string& path) {
-	std::ofstream f(path, std::ios::binary);
+void Coff::AppendPadding(uint16_t sectionIdx, uint32_t alignment) {
+	uint32_t currentSize = static_cast<uint32_t>(sectionBuffers_[sectionIdx - 1].size());
+	uint32_t paddedSize = (currentSize + alignment - 1) & ~(alignment - 1);
+	uint32_t paddingNeeded = paddedSize - currentSize;
 
-	// 1. Prepare Header
-	IMAGE_FILE_HEADER fileHeader = { 0 };
-	fileHeader.Machine = IMAGE_FILE_MACHINE_AMD64;
-	fileHeader.NumberOfSections = (uint16_t)sections_.size();
-	fileHeader.NumberOfSymbols = (uint32_t)symbols_.size();
-	fileHeader.SizeOfOptionalHeader = 0; // Standard for COFF object files
-	fileHeader.Characteristics = 0;
-
-	// Helper to align offsets to 512-byte boundaries (Standard for Windows loaders)
-	auto Align = [](uint32_t offset, uint32_t alignment) {
-		return (offset + alignment - 1) & ~(alignment - 1);
-		};
-
-	// 2. PASS 1: Calculate all File Offsets
-	// Start after the File Header and all Section Headers
-	uint32_t currentOffset = sizeof(IMAGE_FILE_HEADER) + (uint32_t)(sections_.size() * sizeof(IMAGE_SECTION_HEADER));
-
-	// Calculate Raw Data Offsets
-	for (size_t i = 0; i < sections_.size(); ++i) {
-		if (!sectionBuffers_[i].empty()) {
-			// Align start of each section for file compliance
-			currentOffset = Align(currentOffset, 512);
-			sections_[i].PointerToRawData = currentOffset;
-			sections_[i].SizeOfRawData = (uint32_t)sectionBuffers_[i].size();
-			currentOffset += sections_[i].SizeOfRawData;
-		}
-		else {
-			sections_[i].PointerToRawData = 0;
-			sections_[i].SizeOfRawData = 0;
-		}
+	if (paddingNeeded > 0) {
+		// resize() appends 0x00 by default
+		sectionBuffers_[sectionIdx - 1].resize(paddedSize, 0x00);
 	}
-
-	// Calculate Relocation Offsets
-	for (size_t i = 0; i < sections_.size(); ++i) {
-		if (!sectionRelocs_[i].empty()) {
-			// Relocations don't strictly require 512-alignment, but 4-byte is safe
-			currentOffset = Align(currentOffset, 4);
-			sections_[i].PointerToRelocations = currentOffset;
-			sections_[i].NumberOfRelocations = (uint16_t)sectionRelocs_[i].size();
-			currentOffset += (uint32_t)(sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
-		}
-		else {
-			sections_[i].PointerToRelocations = 0;
-			sections_[i].NumberOfRelocations = 0;
-		}
-	}
-
-	// Calculate Symbol Table Offset
-	currentOffset = Align(currentOffset, 4);
-	fileHeader.PointerToSymbolTable = currentOffset;
-
-	// 3. PASS 2: Physical Write Phase
-	// Write Header and (now fully updated) Section Headers
-	f.write((char*)&fileHeader, sizeof(fileHeader));
-	f.write((char*)sections_.data(), sections_.size() * sizeof(IMAGE_SECTION_HEADER));
-
-	// Write Raw Data with padding
-	for (size_t i = 0; i < sections_.size(); ++i) {
-		if (!sectionBuffers_[i].empty()) {
-			// Fill the gap between previous data and this section start
-			long currentPos = (long)f.tellp();
-			int padding = sections_[i].PointerToRawData - currentPos;
-			if (padding > 0) {
-				std::vector<char> pad(padding, 0);
-				f.write(pad.data(), padding);
-			}
-			f.write((char*)sectionBuffers_[i].data(), sectionBuffers_[i].size());
-		}
-	}
-
-	// Write Relocation Tables
-	for (size_t i = 0; i < sections_.size(); ++i) {
-		if (!sectionRelocs_[i].empty()) {
-			long currentPos = (long)f.tellp();
-			int padding = sections_[i].PointerToRelocations - currentPos;
-			if (padding > 0) {
-				std::vector<char> pad(padding, 0);
-				f.write(pad.data(), padding);
-			}
-			f.write((char*)sectionRelocs_[i].data(), sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
-		}
-	}
-
-	// Write Symbols
-	long symPos = (long)f.tellp();
-	int symPadding = fileHeader.PointerToSymbolTable - symPos;
-	if (symPadding > 0) {
-		std::vector<char> pad(symPadding, 0);
-		f.write(pad.data(), symPadding);
-	}
-	f.write((char*)symbols_.data(), symbols_.size() * sizeof(RawSymbol));
-
-	// Finalize and Write String Table
-	// Prefix the table with its total size (including the 4 bytes for the size itself)
-	uint32_t totalStringTableSize = static_cast<uint32_t>(stringTable_.size());
-	memcpy(stringTable_.data(), &totalStringTableSize, 4);
-	f.write(stringTable_.data(), stringTable_.size());
-
-	f.close();
 }
 
-//void Coff::WriteTo(const std::string& path) {
-//	std::ofstream f(path, std::ios::binary);
-//
-//	auto align = [](uint32_t offset, uint32_t alignment) {
-//		return (offset + alignment - 1) & ~(alignment - 1);
-//	};
-//
-//	// 1. Prepare Header
-//	IMAGE_FILE_HEADER fileHeader = { 0 };
-//	fileHeader.Machine = IMAGE_FILE_MACHINE_AMD64;
-//	fileHeader.NumberOfSections = (uint16_t)sections_.size();
-//	fileHeader.NumberOfSymbols = (uint32_t)symbols_.size();
-//
-//	// 2. Calculate Offsets 
-//	uint32_t currentOffset = sizeof(IMAGE_FILE_HEADER) + (uint32_t)(sections_.size() * sizeof(IMAGE_SECTION_HEADER));
-//
-//	// First: All Raw Data
-//	for (size_t i = 0; i < sections_.size(); ++i) {
-//		if (!sectionBuffers_[i].empty()) {
-//			sections_[i].PointerToRawData = currentOffset;
-//			sections_[i].SizeOfRawData = (uint32_t)sectionBuffers_[i].size();
-//			currentOffset = align(currentOffset + sections_[i].SizeOfRawData, 4);
-//		}
-//		else {
-//			sections_[i].PointerToRawData = 0;
-//			sections_[i].SizeOfRawData = 0;
-//		}
-//	}
-//
-//	// Second: All Relocations
-//	for (size_t i = 0; i < sections_.size(); ++i) {
-//		if (!sectionRelocs_[i].empty()) {
-//			sections_[i].PointerToRelocations = currentOffset;
-//			sections_[i].NumberOfRelocations = (uint16_t)sectionRelocs_[i].size();
-//			currentOffset += (uint32_t)(sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
-//		}
-//		else {
-//			sections_[i].PointerToRelocations = 0;
-//			sections_[i].NumberOfRelocations = 0;
-//		}
-//	}
-//
-//	fileHeader.PointerToSymbolTable = currentOffset;
-//
-//	// 3. Physical Write Phase
-//	f.write((char*)&fileHeader, sizeof(fileHeader));
-//	f.write((char*)sections_.data(), sections_.size() * sizeof(IMAGE_SECTION_HEADER));
-//
-//	// Write all Raw Data buffers sequentially (No padding)
-//	for (size_t i = 0; i < sections_.size(); ++i) {
-//		if (!sectionBuffers_[i].empty()) {
-//			f.write((char*)sectionBuffers_[i].data(), sectionBuffers_[i].size());
-//		}
-//	}
-//
-//	// Write all Relocation tables sequentially (No padding)
-//	for (size_t i = 0; i < sections_.size(); ++i) {
-//		if (!sectionRelocs_[i].empty()) {
-//			f.write((char*)sectionRelocs_[i].data(), sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
-//		}
-//	}
-//
-//	// Write Symbols and String Table
-//	uint32_t totalSize = static_cast<uint32_t>(stringTable_.size());
-//	memcpy(stringTable_.data(), &totalSize, 4);
-//
-//	f.write((char*)symbols_.data(), symbols_.size() * sizeof(RawSymbol));
-//	f.write((char*)stringTable_.data(), stringTable_.size());
-//
-//	f.close();
-//}
+void Coff::WriteTo(const std::string& path) {
+    std::ofstream f(path, std::ios::binary);
+
+    // 1. Prepare Header
+    IMAGE_FILE_HEADER fileHeader = { 0 };
+    fileHeader.Machine = IMAGE_FILE_MACHINE_AMD64;
+    fileHeader.NumberOfSections = (uint16_t)sections_.size();
+    fileHeader.NumberOfSymbols = (uint32_t)symbols_.size();
+    fileHeader.SizeOfOptionalHeader = 0; 
+    fileHeader.Characteristics = 0;
+
+    auto Align = [](uint32_t offset, uint32_t alignment) {
+        return (offset + alignment - 1) & ~(alignment - 1);
+    };
+
+    // 2. PASS 1: Calculate all File Offsets
+    uint32_t currentOffset = sizeof(IMAGE_FILE_HEADER) + (uint32_t)(sections_.size() * sizeof(IMAGE_SECTION_HEADER));
+
+    // Raw Data Offsets (Aligned to 512 for PE compatibility)
+    for (size_t i = 0; i < sections_.size(); ++i) {
+        if (!sectionBuffers_[i].empty()) {
+            currentOffset = Align(currentOffset, 512);
+            sections_[i].PointerToRawData = currentOffset;
+            sections_[i].SizeOfRawData = (uint32_t)sectionBuffers_[i].size();
+            currentOffset += sections_[i].SizeOfRawData;
+        }
+    }
+
+    // Relocation Offsets (Aligned to 4)
+    for (size_t i = 0; i < sections_.size(); ++i) {
+        if (!sectionRelocs_[i].empty()) {
+            currentOffset = Align(currentOffset, 4);
+            sections_[i].PointerToRelocations = currentOffset;
+            sections_[i].NumberOfRelocations = (uint16_t)sectionRelocs_[i].size();
+            currentOffset += (uint32_t)(sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
+        }
+    }
+
+    // Symbol Table Offset
+    currentOffset = Align(currentOffset, 4);
+    fileHeader.PointerToSymbolTable = currentOffset;
+
+    // 3. PASS 2: Physical Write Phase
+    f.write((char*)&fileHeader, sizeof(fileHeader));
+    f.write((char*)sections_.data(), sections_.size() * sizeof(IMAGE_SECTION_HEADER));
+
+    // Write Raw Data with padding
+    for (size_t i = 0; i < sections_.size(); ++i) {
+        if (!sectionBuffers_[i].empty()) {
+            long currentPos = (long)f.tellp();
+            int padding = sections_[i].PointerToRawData - currentPos;
+            if (padding > 0) {
+                std::vector<char> pad(padding, 0);
+                f.write(pad.data(), padding);
+            }
+            f.write((char*)sectionBuffers_[i].data(), sectionBuffers_[i].size());
+        }
+    }
+
+    // Write Relocations
+    for (size_t i = 0; i < sections_.size(); ++i) {
+        if (!sectionRelocs_[i].empty()) {
+            long currentPos = (long)f.tellp();
+            int padding = sections_[i].PointerToRelocations - currentPos;
+            if (padding > 0) {
+                std::vector<char> pad(padding, 0);
+                f.write(pad.data(), padding);
+            }
+            f.write((char*)sectionRelocs_[i].data(), sectionRelocs_[i].size() * sizeof(IMAGE_RELOCATION));
+        }
+    }
+
+    // Write Symbols
+    long currentPos = (long)f.tellp();
+    int symPadding = fileHeader.PointerToSymbolTable - currentPos;
+    if (symPadding > 0) {
+        std::vector<char> pad(symPadding, 0);
+        f.write(pad.data(), symPadding);
+    }
+    f.write((char*)symbols_.data(), symbols_.size() * sizeof(RawSymbol));
+
+    // Finalize and Write String Table
+    // The first 4 bytes MUST be the total size of the table
+    uint32_t totalStringTableSize = static_cast<uint32_t>(stringTable_.size());
+    memcpy(stringTable_.data(), &totalStringTableSize, 4);
+    f.write(stringTable_.data(), stringTable_.size());
+
+    f.close();
+}

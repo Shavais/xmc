@@ -808,25 +808,25 @@ Here's how I envision the process:
 
     GetModifiedSourcePaths          - populates a list of modified .xm paths and their associated .xmo paths
         WalkFsTree                  - walks a filesystem tree under a specified parent folder, returns the file modtimes and relative pathnames that match a specified mask 
-    LoadModifiedSources             - loads the source files and fully loads .xmo files where either the .xmo doesn't exist or the mod time of the source file > .xmo mod time
-    ParseModifiedSources            - creates a parse tree and a symbol table for each loaded .xm, marking up symbol refinements in the process;
-                                        when symbols of a .xmo are created or modified, that marks that .xmo as dirty
+    LoadModifiedSources             - loads the .xm (source) files and starts new .xmo's where either the .xmo doesn't exist or the mod time of the source file > .xmo mod time
+    ParseModifiedSources            - creates parse trees, scope trees, symbol exports and relocations in the .xmo's for each loaded .xm, marking up symbol refinements in the process;
+                                        when symbols of an .xmo are created or modified, that marks that .xmo as dirty
                                         if a refinement of a symbol that hasn't been loaded is required, a flag is set indicateding a full scan is required
   if a full scan is required:
     LoadXmos                        - loads all the parse trees of the currently loaded .xmo's, and everything from the .xmo's of the unmodified .xm's
     FullScan                        - sets all symbol refinements to 0 and scans all the parse trees and marks up all symbol refinements, 
                                         marking .xmo's as dirty whose symbol tables are modified by this process  
   if no full scan is requried:
-    LoadPartialXmos                 - loads the machine code blocks for all the .xmo's that aren't already loaded 
+    LoadPartialXmos                 - loads the exports, relocations and machine code blocks for all the .xmo's that aren't already loaded 
   either way:
-    UpdateXmoCode                   - builds the machine code blocks of Xmos that were of the loaded parse trees
+    UpdateXmoCode                   - builds the the machine code blocks of Xmos that have parse trees loaded or created
     SaveXmos                        - saves dirty xmo's
     WriteCoffFile                   - write the output coff file
 
 The above processes can be parallelized to some extent, I think, although I may end up limiting the number of threads running at a time to prevent CPU overheating:
 
 GetModifiedSourcePaths can launch a thread for the source folder tree where the xm's are and another thread for the intermediate folder where the xmo's are.
-WalkFsTree can launch a thread per folder and the wait for those threads to complete 
+WalkFsTree can launch a thread per folder and then wait for those threads to complete 
 LoadModifiedSources can launch a thread per file (and wait for those threads to complete).
 ParseModifiedSources can launch a thread per file.
 LoadXmos can launch a thread per file.

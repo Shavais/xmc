@@ -40,12 +40,20 @@ public:
 	// Set the name of given symbol
 	void SetSymbolName(RawSymbol& sym, const std::string& name);
 
+	uint32_t PushRawSymbol(const RawSymbol& sym);
+
+	uint32_t DefineSymbol(const std::string& name, uint32_t value, uint16_t sectionIdx, uint8_t storageClass);
+		
 	// Helper to add a relocation to a specific section
 	void AddRelocation(uint16_t sectionIdx, uint32_t offset, uint32_t symbolIdx, uint16_t type);
 
 	// Add cection
 	uint16_t CreateSection(const std::string& name, SectionType type);
 
+	// Get the 
+	uint32_t GetSectionBufferSize(uint16_t sectionIdx);
+
+	void AppendPadding(uint16_t sectionIdx, uint32_t alignment);
 
 	// Write coff file to path
 	void WriteTo(const std::string& path);

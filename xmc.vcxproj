@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -147,7 +147,9 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\process\CmdLine.cpp" />
+    <ClCompile Include="src\process\Emitter.cpp" />
     <ClCompile Include="src\process\Linker.cpp" />
+    <ClCompile Include="src\process\Parser.cpp" />
     <ClCompile Include="src\process\ProjectFile.cpp" />
     <ClCompile Include="src\process\Util.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
@@ -163,14 +165,21 @@
     <Text Include="doc\The xmc programming language.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\data\CompilerData.h" />
+    <ClInclude Include="src\data\AltCodeBlocks.h" />
+    <ClInclude Include="src\data\EmitterData.h" />
     <ClInclude Include="src\data\GlobalData.h" />
+    <ClInclude Include="src\data\CodeBlock.h" />
     <ClInclude Include="src\data\LinkerData.h" />
+    <ClInclude Include="src\data\ParserData.h" />
+    <ClInclude Include="src\data\PrimaryCodeBlocks.h" />
     <ClInclude Include="src\data\ProjectFileData.h" />
+    <ClInclude Include="src\data\XmoData.h" />
     <ClInclude Include="src\pch.h" />
     <ClInclude Include="src\data\CmdLineData.h" />
     <ClInclude Include="src\process\CmdLine.h" />
+    <ClInclude Include="src\process\Emitter.h" />
     <ClInclude Include="src\process\Linker.h" />
+    <ClInclude Include="src\process\Parser.h" />
     <ClInclude Include="src\process\ProjectFile.h" />
     <ClInclude Include="src\process\Util.h" />
     <ClInclude Include="src\stl.h" />
@@ -182,6 +191,7 @@
     <ClInclude Include="src\win32.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="src\xm\Test01.xm" />
     <None Include="tests\hello\hello.xmc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

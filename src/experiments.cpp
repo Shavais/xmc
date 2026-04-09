@@ -6,6 +6,10 @@
 #include <vector>
 #include <windows.h>
 
+#include "data/EmitterData.h"
+#include "data/PrimaryCodeBlocks.h"
+#include "process/Emitter.h"
+
 #include "tool/Coff.h"
 
 int Hello() {
@@ -311,4 +315,122 @@ void CallCppFunction() {
 
 	// 5. Write to file
 	coff.WriteTo("hello.obj");
+}
+
+void CallCppFunction2() {
+	using namespace process;
+
+	// --- XMO 1: WriteToConsole (Internal Helper) ---
+	data::Xmo* xmoHelper = new data::Xmo();
+	xmoHelper->name = "WriteToConsole";
+	// x64: lea rcx, [rel msg]; call SVGE_Log; ret
+	xmoHelper->codeBuffer = {
+		0x48, 0x83, 0xEC, 0x28,                     // sub rsp, 40  <-- ADD THIS
+		0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00,   // lea rcx, [rel msg]
+		0xE8, 0x00, 0x00, 0x00, 0x00,               // call SVGE_Log
+		0x48, 0x83, 0xC4, 0x28,                     // add rsp, 40  <-- ADD THIS
+		0xC3                                        // ret
+	};
+
+	// Update your relocation offsets because of the new 'sub rsp' (4 bytes)
+	xmoHelper->relocs.push_back({ "msg", 7, IMAGE_REL_AMD64_REL32 });
+	xmoHelper->relocs.push_back({ "SVGE_Log", 12, IMAGE_REL_AMD64_REL32 });
+
+
+	// --- XMO 2: Main Entry & Data ---
+	data::Xmo* xmoMain = new data::Xmo();
+	xmoMain->name = "main";
+	// x64: sub rsp, 40; call WriteToConsole; add rsp, 40; ret
+	xmoMain->codeBuffer = {
+		0x48, 0x83, 0xEC, 0x28,             // sub rsp, 40
+		0xE8, 0x00, 0x00, 0x00, 0x00,       // call WriteToConsole (offset 5)
+		0x48, 0x83, 0xC4, 0x28,             // add rsp, 40
+		0xC3                                // ret
+	};
+	xmoMain->relocs.push_back({ "WriteToConsole", 5, IMAGE_REL_AMD64_REL32 });
+
+	// Add the "msg" as an export inside xmoMain's data space
+	std::string text = "Internal call success!\n";
+	uint32_t msgOffset = (uint32_t)xmoMain->codeBuffer.size();
+	xmoMain->codeBuffer.insert(xmoMain->codeBuffer.end(), text.begin(), text.end());
+	xmoMain->codeBuffer.push_back(0); // null terminator
+
+	data::XmoExport msgExport;
+	msgExport.name = "msg";
+	msgExport.offset = msgOffset;
+	xmoMain->exports.push_back(msgExport);
+
+
+	// --- 2. Write to COFF ---
+	std::vector<data::Xmo*> xmos = { xmoHelper, xmoMain };
+	WriteToCoff(xmos, "hello.obj");
+
+	// Cleanup (in a real app, use smart pointers!)
+	delete xmoHelper;
+	delete xmoMain;
+}
+
+
+void CallCppFunction3() {
+	using namespace process;
+	using namespace data;
+
+	// --- 1. Define XMO 1: WriteToConsole ---
+	Xmo* xmoHelper = new Xmo();
+	xmoHelper->name = "WriteToConsole";
+
+	// Setup function data (just shadow space, no locals)
+	FunctionNodeData* helperFunc = new FunctionNodeData();
+	helperFunc->localSize = 0;
+
+	// Root node for the function
+	ParseTreeNode* helperRoot = new ParseTreeNode();
+	helperRoot->funcData = helperFunc;
+
+	// Blocks: LEA rcx, [msg] -> CALL SVGE_Log
+	helperRoot->blockId = { bid.lea_rcx_rel, bid.call_rel32 };
+	helperRoot->patchSymbol = { "msg", "SVGE_Log" };
+
+	xmoHelper->parseTree = helperRoot;
+
+	// --- 2. Define XMO 2: Main Entry ---
+	Xmo* xmoMain = new Xmo();
+	xmoMain->name = "main";
+
+	FunctionNodeData* mainFunc = new FunctionNodeData();
+	mainFunc->localSize = 0;
+
+	data::ParseTreeNode* mainRoot = new data::ParseTreeNode();
+	mainRoot->funcData = mainFunc;
+
+	// Blocks: CALL WriteToConsole
+	mainRoot->blockId = { bid.call_rel32 };
+	mainRoot->patchSymbol = { "WriteToConsole" };
+
+	xmoMain->parseTree = mainRoot;
+
+	// --- 3. Manually add Data Export to xmoMain ---
+	// (Since the Emitter doesn't handle static data/strings yet)
+	std::string text = "XMC Block Stitching Success!\n";
+	xmoMain->codeBuffer.insert(xmoMain->codeBuffer.end(), text.begin(), text.end());
+	xmoMain->codeBuffer.push_back(0);
+
+	data::XmoExport msgExport;
+	msgExport.name = "msg";
+	msgExport.offset = 0; // It's at the start of the buffer for now
+	xmoMain->exports.push_back(msgExport);
+
+	// --- 4. The Pipeline ---
+	std::vector<data::Xmo*> xmos = { xmoHelper, xmoMain };
+
+	// Pass 1: Emit (This populates codeBuffer and relocs based on the trees)
+	UpdateXmoCode(xmos, 4);
+
+	// Pass 2: Link
+	WriteToCoff(xmos, "hello_stitched.obj");
+
+	// Cleanup
+	// Note: In reality, you'd delete the recursive tree nodes too!
+	delete helperFunc; delete helperRoot; delete xmoHelper;
+	delete mainFunc; delete mainRoot; delete xmoMain;
 }

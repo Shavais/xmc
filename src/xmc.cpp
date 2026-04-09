@@ -22,7 +22,7 @@ int main(int argc, char* argv[])
 		InitializeLogging();
 
 		RemoveFile("hello.obj");
-		CallCppFunction();		// produces hello.obj 
+		CallCppFunction2();		// produces hello.obj 
 		
 		ParseCommandLine(argc, argv);	
 		ParseProjectFile();
