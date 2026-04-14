@@ -46,11 +46,11 @@ public:
 	{
 		vector<string_view> result;
 
-		size_t count = std::count(view_.begin(), view_.end(), token);
+		uint64_t count = std::count(view_.begin(), view_.end(), token);
 		result.reserve(count + 1);
 
-		size_t start = 0;
-		size_t end = view_.find(token);
+		uint64_t start = 0;
+		uint64_t end = view_.find(token);
 
 		while (end != view_.npos) {
 			result.emplace_back(view_.substr(start, end - start));
@@ -68,7 +68,7 @@ public:
 		Skip(" \t\r\n");
 		if (Empty()) return { "", "" };
 
-		size_t eqPos = view_.find('=');
+		uint64_t eqPos = view_.find('=');
 		if (eqPos == view_.npos) return { "", "" };
 
 		string_view name = lrtrim(view_.substr(0, eqPos));
@@ -78,7 +78,7 @@ public:
 		string_view value;
 		// Check if the value is a bracketed list: [ path1, path2 ]
 		if (!Empty() && view_[0] == '[') {
-			size_t endBracket = view_.find(']');
+			uint64_t endBracket = view_.find(']');
 			if (endBracket != view_.npos) {
 				// Keep the brackets in the value for later processing
 				value = view_.substr(0, endBracket + 1);
@@ -119,7 +119,7 @@ public:
 	inline string_view ReadUntil(const char token)
 	{
 		string_view result;
-		size_t end = view_.find(token);
+		uint64_t end = view_.find(token);
 		if (end == view_.npos)
 		{
 			result = view_;
@@ -135,7 +135,7 @@ public:
 
 	inline pair<string_view, char> ReadUntil(const string& tokens, bool skipDelimiter = false)
 	{
-		size_t end = view_.find_first_of(tokens);
+		uint64_t end = view_.find_first_of(tokens);
 		string_view result;
 		char token;
 
@@ -187,7 +187,7 @@ public:
 
 	// Takes a string like "{1, 2, 3}" or "{3.14, 0.29, 3, 9.6}" and returns an array<TargetType, N>.
 	// If fewer than N values are represented in the string, default values are used.
-	template <typename TargetType, size_t N>
+	template <typename TargetType, uint64_t N>
 	static array<TargetType, N> GetFixedArray(std::string_view s, TargetType defaultValue = TargetType()) {
 		std::array<TargetType, N> result;
 		result.fill(defaultValue);
@@ -195,7 +195,7 @@ public:
 		TextParser p(s);
 		p.Skip(" \t\r\n{");
 
-		for (size_t i = 0; i < N && !p.Empty() && !p.CheckFor('}'); ++i) {
+		for (uint64_t i = 0; i < N && !p.Empty() && !p.CheckFor('}'); ++i) {
 			result[i] = p.ReadValue<TargetType>(defaultValue);
 			p.Skip(" \t\r\n,");
 		}
@@ -243,11 +243,11 @@ public:
 	// returns a stringview containing the content of a curly brace pair which is at the current parser position.
 	// advances the parser view's start pointer just past the ending brace.
 	string_view ReadBracedContent(char startbrace = '{', char endbrace = '}') {
-		size_t start = view_.find(startbrace);
+		uint64_t start = view_.find(startbrace);
 		if (start == string_view::npos) return {};
 
 		start += 1;
-		size_t end = start;
+		uint64_t end = start;
 		int bracecount = 1;
 		char search_set_array[] = { startbrace, endbrace };
 		string_view search_set(search_set_array, 2);

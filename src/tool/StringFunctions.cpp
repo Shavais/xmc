@@ -35,7 +35,7 @@ namespace sv
 		}
 
 		char buffer[64];
-		size_t u8sWritten = strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+		uint64_t u8sWritten = strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
 		if (u8sWritten == 0) {
 			errlog << "Error formatting time string: " << GetErrorMessage(errno) << std::endl;
 			return "";

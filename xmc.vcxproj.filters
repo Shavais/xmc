@@ -51,6 +51,15 @@
     <ClCompile Include="src\process\Parser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\prebuild\XmaParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\LoadModifiedSources.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\Xmo.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\The xmc programming language.txt" />
@@ -131,9 +140,27 @@
     <ClInclude Include="src\data\ParserData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\prebuild\XmaParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\tool\BS_thread_pool.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\data\SourceFileData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\data\MemoryData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\data\Arena.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\hello\hello.xmc" />
-    <None Include="src\xm\Test01.xm" />
+    <None Include="tests\xmdev\Test01.xm_" />
+    <None Include="src\prebuild\PrimaryCodeBlocks.xma" />
+    <None Include="tests\xmdev\extern.xm_" />
+    <None Include="tests\xmdev\xmdev.xmc" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,22 @@
+// numeric literals, variables and math
+
+// integer variables, math and implicit casting: +, -, *, /, ^
+u8 a = 36;                          // copy assignments ( := is reference assignment, that'll come later)
+u16 b = a / 2;                      // the value 18 in a two byte space 
+u32 c = a + b;                      // 36 in a 4 byte space
+u64 d = c * ((a * b - b * c));      // negative; silently wraps around to a very high positive
+u8 e = d % 13;                      // truncated remainder after division, warning emitted
+i8 f = e;                           // silent wrap - if e > 127, we have a negative number
+
+
+f32 pi = 3.1415962;
+f64 g = 2 * pi * pi / 3;            
+f64 h = g ^ 4;                      // exponent
+u8 = h;                             // some garbage value, warning emitted
+
+test1()
+{
+    SVGE_Log(a)
+}
+
+namespace 

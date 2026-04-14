@@ -1,180 +1,166 @@
 #include "pch.h"
 #include "Emitter.h"
 
-#include <unordered_map>
+#include <algorithm>
 #include <cstdint>
 #include <future>
+#include <latch>
+#include <semaphore>
+#include <unordered_map>
 #include <vector>
-#include <algorithm>
-
 
 #include "data/AltCodeBlocks.h"
-#include "tool/Coff.h"
 #include "data/EmitterData.h"
+#include "data/GlobalData.h"
 #include "data/PrimaryCodeBlocks.h"
 #include "data/XmoData.h"
 
+#include "tool/BS_thread_pool.hpp"
+#include "tool/Coff.h"
+#include "tool/Logger.h"
+
+using namespace data;
+
 namespace process
 {
-	void ProcessNode(data::Xmo* xmo, data::ParseTreeNode* node, uint32_t& liveMask, std::vector<data::EmitterFuncContext>& funcStack) {
+
+	void ProcessNode(data::Xmo* xmo, data::ParseTreeNode* node, std::vector<EmitterFuncContext>& funcStack) {
 		if (!node) return;
+		using namespace data;
 
-		// 1. Handle Function Entry (Prologue)
 		bool isFunction = (node->funcData != nullptr);
+
 		if (isFunction) {
-			data::EmitterFuncContext ctx;
-			ctx.localVars = node->funcData->localSize;
-			ctx.currentSpills = 0;
-			ctx.peakSpills = 0;
+			xmo->codeBuffer.clear(); // FORCE CLEAR to ensure no ghost data
+			xmo->relocs.clear();
+			xmo->exports[node->funcData->exportIdx].offset = 0;
 
-			// Emit Prologue with 0x00 placeholder
-			const auto* b = &data::PrimaryCodeBlocks[(uint16_t)data::BlockIds::prologue];
-			ctx.prologueImmediatePos = xmo->codeBuffer.size() + b->patchOffset;
-			xmo->codeBuffer.insert(xmo->codeBuffer.end(), b->code, b->code + b->codeSize);
+			// Record the physical start of the function for the Export table
+			xmo->exports[node->funcData->exportIdx].offset = (uint32_t)xmo->codeBuffer.size();
 
-			funcStack.push_back(ctx);
+			// Handle Prologue (Automatic Injection)
+			if (!node->funcData->isLeaf) {
+				const auto* b = &data::PrimaryCodeBlocks[bid.prologue];
+
+				EmitterFuncContext ctx;
+				// Capture where the stack immediate byte will live so we can back-patch it
+				ctx.prologueImmediatePos = (uint32_t)xmo->codeBuffer.size() + b->patchOffset;
+				ctx.finalStackSize = node->funcData->totalStackSize;
+
+				xmo->codeBuffer.insert(xmo->codeBuffer.end(), b->code, b->code + b->codeSize);
+				funcStack.push_back(ctx);
+			}
 		}
 
-		// 2. Emit Blocks for this Node
-		for (size_t i = 0; i < node->blockId.size(); ++i) {
-			const data::CodeBlock* b = &data::PrimaryCodeBlocks[node->blockId[i]];
+		uint64_t symbolIdx = 0;
 
-			// Register Conflict Resolution
-			while ((b->reserveMask & liveMask) != 0) {
-				if (b->altTableIndex == 0) {
-					// Hit terminal Spill-to-Stack block
-					if (!funcStack.empty()) {
-						auto& ctx = funcStack.back();
-						ctx.currentSpills++; // Logically "push"
-						if (ctx.currentSpills > ctx.peakSpills) ctx.peakSpills = ctx.currentSpills;
+		// Main Body Emission Loop
+		for (uint64_t i = 0; i < node->codeBlocks.size(); ++i) {
+			const data::CodeBlock* b = &data::PrimaryCodeBlocks[node->codeBlocks[i]];
 
-						// Note: currentSpills-- happens after emission 
-						// because the block cleans up its own stack (Push->Code->Pop)
-					}
-					break;
-				}
-				b = &data::AltCodeBlocks[b->altTableIndex];
-			}
-
-			// Handle Relocations (Patches)
+			// Handle Relocations (Linear: matches block to next available symbol)
 			if (b->patchOffset != 0xFF) {
-				data::XmoRelocation rel;
-				rel.offset = (uint32_t)xmo->codeBuffer.size() + b->patchOffset;
-				rel.type = IMAGE_REL_AMD64_REL32;
-				rel.targetSymbol = node->patchSymbol[i];
-				xmo->relocs.push_back(rel);
-			}
-
-			// Stitch Machine Code
-			xmo->codeBuffer.insert(xmo->codeBuffer.end(), b->code, b->code + b->codeSize);
-
-			// Update masks and cleanup spill tracking
-			if (b->altTableIndex == 0 && !funcStack.empty()) {
-				funcStack.back().currentSpills--; // Logically "pop"
-			}
-			liveMask |= b->reserveMask;
-			liveMask &= ~b->releaseMask;
-		}
-
-		// 3. Recurse through children
-		for (auto* child : node->children) {
-			ProcessNode(xmo, child, liveMask, funcStack);
-		}
-
-		// 4. Handle Function Exit (Epilogue + Back-patch)
-		if (isFunction) {
-			auto& ctx = funcStack.back();
-
-			// (Shadow 32) + Locals + (Peak * 8), aligned to 16
-			uint32_t finalSize = (32 + ctx.localVars + (ctx.peakSpills * 8) + 15) & ~15;
-
-			// Back-patch Prologue
-			xmo->codeBuffer[ctx.prologueImmediatePos] = (uint8_t)finalSize;
-
-			// Emit Epilogue
-			const auto* epi = &data::PrimaryCodeBlocks[(uint16_t)data::BlockIds::epilogue];
-			size_t epiStart = xmo->codeBuffer.size();
-			xmo->codeBuffer.insert(xmo->codeBuffer.end(), epi->code, epi->code + epi->codeSize);
-			xmo->codeBuffer[epiStart + epi->patchOffset] = (uint8_t)finalSize;
-
-			funcStack.pop_back();
-		}
-	}
-
-	void UpdateXmoCode(std::vector<data::Xmo*>& xmos, uint32_t maxThreads) 
-	{
-		std::vector<std::future<void>> workers;
-
-		for (data::Xmo* xmo : xmos) 
-		{
-			if (workers.size() >= maxThreads) 
-			{
-				workers.front().get();
-				workers.erase(workers.begin());
-			}
-
-			workers.push_back(std::async(std::launch::async, 
-				[xmo]() 
-				{
-					uint32_t liveMask = 0;
-					std::vector<data::EmitterFuncContext> funcStack;
-
-					if (xmo->parseTree != nullptr) {
-						ProcessNode(xmo, xmo->parseTree, liveMask, funcStack);
-					}
+				if (symbolIdx < node->patchSymbols.size()) {
+					xmo->relocs.push_back({
+						node->patchSymbols[symbolIdx++],
+						(uint32_t)xmo->codeBuffer.size() + b->patchOffset,
+						4 // IMAGE_REL_AMD64_REL32
+						});
 				}
-			));
+			}
+
+			// Stamp machine code
+			xmo->codeBuffer.insert(xmo->codeBuffer.end(), b->code, b->code + b->codeSize);
 		}
 
-		// Final synchronization: ensure all Xmo buffers are populated before returning
-		for (auto& worker : workers) 
-		{
-			if (worker.valid()) worker.get();
+		// Recurse through children (Parser-determined tree order)
+		for (uint32_t i = 0; i < node->childCount; i++) {
+			auto* child = node->children[i];
+			ProcessNode(xmo, child, funcStack);
+		}
+
+		if (isFunction) {
+			if (!node->funcData->isLeaf) {
+				auto& ctx = funcStack.back();
+				uint8_t stackVal = (uint8_t)ctx.finalStackSize;
+
+				// Back-patch the Prologue's "sub rsp, XX"
+				xmo->codeBuffer[ctx.prologueImmediatePos] = stackVal;
+
+				// Handle Epilogue (Automatic Injection)
+				const auto* epi = &data::PrimaryCodeBlocks[bid.epilogue];
+				uint64_t epiStart = xmo->codeBuffer.size();
+				xmo->codeBuffer.insert(xmo->codeBuffer.end(), epi->code, epi->code + epi->codeSize);
+
+				// Patch the "add rsp, XX" and the 'ret' is already in the block
+				xmo->codeBuffer[epiStart + epi->patchOffset] = stackVal;
+
+				funcStack.pop_back();
+			}
+			else {
+				// Leaf functions just need a return instruction
+				xmo->codeBuffer.push_back(0xC3); // ret
+			}
+
+			// Emit Static Data (Strings/Constants) after the function exit
+			for (const auto& sData : node->staticData) {
+				xmo->exports[sData.exportIdx].offset = (uint32_t)xmo->codeBuffer.size();
+				xmo->codeBuffer.insert(xmo->codeBuffer.end(), sData.bytes.begin(), sData.bytes.end());
+			}
 		}
 	}
 
+	// Takes code blocks from the xmo parse trees and update the xmo code buffers.
+	void UpdateXmoCode() {
+
+		auto xmos = data::Xmos;
+		uint8_t maxThreads = data::MaxThreads;
+
+		BS::thread_pool pool(maxThreads);
+
+		for (data::Xmo* xmo : xmos) {
+			if (!xmo->dirty_) continue;		// we don't need to update the xmo's of unmodified files if there were no refinments in them and their xm's did not need to be recompiled
+			pool.detach_task([xmo]() {
+				try {
+					uint32_t liveMask = 0;
+					std::vector<EmitterFuncContext> funcStack;
+
+					// Trigger the recursive tree walk
+					if (xmo != nullptr && xmo->parseTree != nullptr) {
+						ProcessNode(xmo, xmo->parseTree, funcStack);
+					}
+				} 
+				catch (...) {};
+			});
+		}
+		pool.wait();
+	}
+
+	// Takes code buffers from xmo's and writes to the target coff file for the project
 	void WriteToCoff(const std::vector<data::Xmo*>& xmos, const std::string& outputPath) {
 		Coff coff;
 		uint16_t textIdx = coff.CreateSection(".text", SectionType::Code);
 		std::unordered_map<std::string, uint32_t> globalSymbolMap;
 
-		// 1. Process Exports & Data
+		// 1. Physical Placement
 		for (auto* xmo : xmos) {
 			coff.AppendPadding(textIdx, 16);
+			xmo->tempGlobalOffset = (uint32_t)coff.GetSectionBufferSize(textIdx);
 
-			// Record the offset BEFORE we add the data
-			uint32_t xmoStartOffset = (uint32_t)coff.GetSectionBufferSize(textIdx);
+			// Copy raw machine code and data into the COFF section
+			coff.AddRawBytes(textIdx, xmo->codeBuffer);
 
-			// Save the start offset for relocation step
-			xmo->tempGlobalOffset = xmoStartOffset;
-
-			// Add the code block and its main symbol
-			// (Assuming each XMO has a primary name/entry)
-			uint32_t symIdx = coff.AddDataSymbol(xmo->name, textIdx, xmo->codeBuffer);
-			globalSymbolMap[xmo->name] = symIdx;
-
+			// Map ONLY the exports defined by the parser and fixed by the emitter
 			for (auto& exp : xmo->exports) {
-				// The symbol value is the start of the XMO + the internal offset
-				uint32_t absoluteExportOffset = xmoStartOffset + exp.offset;
-
-				// We don't use AddDataSymbol here because the bytes are already in the buffer
-				RawSymbol sym = { 0 };
-				coff.SetSymbolName(sym, exp.name);
-				sym.SectionNumber = textIdx;
-				sym.Value = absoluteExportOffset;
-				sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
-
-				// You'll need a small helper in Coff to push a RawSymbol directly
-				uint32_t expIdx = coff.PushRawSymbol(sym);
-				globalSymbolMap[exp.name] = expIdx;
+				uint32_t absoluteOffset = xmo->tempGlobalOffset + exp.offset;
+				uint32_t symIdx = coff.DefineSymbol(exp.name, absoluteOffset, textIdx, IMAGE_SYM_CLASS_EXTERNAL);
+				globalSymbolMap[exp.name] = symIdx;
 			}
-
 		}
 
-		// 2. Process Relocations
+		// 2. Relocation Mapping
 		for (auto* xmo : xmos) {
 			for (auto& rel : xmo->relocs) {
-				// Find or Add the target symbol
 				uint32_t targetIdx;
 				if (globalSymbolMap.count(rel.targetSymbol)) {
 					targetIdx = globalSymbolMap[rel.targetSymbol];
@@ -183,14 +169,10 @@ namespace process
 					targetIdx = coff.AddExternalSymbol(rel.targetSymbol);
 					globalSymbolMap[rel.targetSymbol] = targetIdx;
 				}
-
-				// The relocation offset is just XMO_START + LOCAL_OFFSET
-				uint32_t finalRelocOffset = xmo->tempGlobalOffset + rel.offset;
-				coff.AddRelocation(textIdx, finalRelocOffset, targetIdx, rel.type);
+				coff.AddRelocation(textIdx, xmo->tempGlobalOffset + rel.offset, targetIdx, rel.type);
 			}
 		}
-
-
+		
 		coff.WriteTo(outputPath);
 	}
 }

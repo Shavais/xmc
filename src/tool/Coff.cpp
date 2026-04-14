@@ -62,11 +62,22 @@ void Coff::SetSymbolName(RawSymbol& sym, const std::string& name) {
 	}
 }
 
-uint32_t Coff::PushRawSymbol(const RawSymbol& sym) {
+uint32_t Coff::PushRawSymbol(const RawSymbol& sym) 
+{
 	symbols_.push_back(sym);
 	return static_cast<uint32_t>(symbols_.size() - 1);
 }
 
+void Coff::AddRawBytes(uint16_t sectionIdx, const std::vector<uint8_t>& data) {
+	// sectionIdx is 1-based, so we subtract 1 for the vector access
+	if (sectionIdx > 0 && sectionIdx <= sectionBuffers_.size()) {
+		sectionBuffers_[sectionIdx - 1].insert(
+			sectionBuffers_[sectionIdx - 1].end(),
+			data.begin(),
+			data.end()
+		);
+	}
+}
 uint32_t Coff::DefineSymbol(const std::string& name, uint32_t value, uint16_t sectionIdx, uint8_t storageClass) {
 	RawSymbol sym = { 0 };
 	SetSymbolName(sym, name);
@@ -84,7 +95,7 @@ uint16_t Coff::CreateSection(const std::string& name, SectionType type) {
 	IMAGE_SECTION_HEADER sh = { 0 };
 
 	// Copy up to 8 bytes. Since sh was zeroed, names < 8 chars are null-padded.
-	size_t len = (name.length() > 8) ? 8 : name.length();
+	uint64_t len = (name.length() > 8) ? 8 : name.length();
 	memcpy(sh.Name, name.c_str(), len);
 
 	switch (type) {
@@ -164,7 +175,7 @@ void Coff::WriteTo(const std::string& path) {
     uint32_t currentOffset = sizeof(IMAGE_FILE_HEADER) + (uint32_t)(sections_.size() * sizeof(IMAGE_SECTION_HEADER));
 
     // Raw Data Offsets (Aligned to 512 for PE compatibility)
-    for (size_t i = 0; i < sections_.size(); ++i) {
+    for (uint64_t i = 0; i < sections_.size(); ++i) {
         if (!sectionBuffers_[i].empty()) {
             currentOffset = Align(currentOffset, 512);
             sections_[i].PointerToRawData = currentOffset;
@@ -174,7 +185,7 @@ void Coff::WriteTo(const std::string& path) {
     }
 
     // Relocation Offsets (Aligned to 4)
-    for (size_t i = 0; i < sections_.size(); ++i) {
+    for (uint64_t i = 0; i < sections_.size(); ++i) {
         if (!sectionRelocs_[i].empty()) {
             currentOffset = Align(currentOffset, 4);
             sections_[i].PointerToRelocations = currentOffset;
@@ -192,7 +203,7 @@ void Coff::WriteTo(const std::string& path) {
     f.write((char*)sections_.data(), sections_.size() * sizeof(IMAGE_SECTION_HEADER));
 
     // Write Raw Data with padding
-    for (size_t i = 0; i < sections_.size(); ++i) {
+    for (uint64_t i = 0; i < sections_.size(); ++i) {
         if (!sectionBuffers_[i].empty()) {
             long currentPos = (long)f.tellp();
             int padding = sections_[i].PointerToRawData - currentPos;
@@ -205,7 +216,7 @@ void Coff::WriteTo(const std::string& path) {
     }
 
     // Write Relocations
-    for (size_t i = 0; i < sections_.size(); ++i) {
+    for (uint64_t i = 0; i < sections_.size(); ++i) {
         if (!sectionRelocs_[i].empty()) {
             long currentPos = (long)f.tellp();
             int padding = sections_[i].PointerToRelocations - currentPos;

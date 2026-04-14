@@ -73,7 +73,7 @@ string ReplacePlaceholders(string text, Args... args)
 		string placeholder = "[" + std::to_string(index++) + "]";
 		string value = to_str(args);
 
-		size_t pos = 0;
+		uint64_t pos = 0;
 		while ((pos = text.find(placeholder, pos)) != string::npos)
 		{
 			text.replace(pos, placeholder.length(), value);
@@ -89,7 +89,7 @@ inline string ReplacePlaceholders(string text, unordered_map<string, string> rep
 {
 	for (const auto& [key, value] : replacements)
 	{
-		size_t pos = 0;
+		uint64_t pos = 0;
 		while ((pos = text.find(key, pos)) != string::npos)
 		{
 			text.replace(pos, key.length(), value);
@@ -108,4 +108,19 @@ inline string Lowercase(string s)
 inline string Lowercase(string_view sv)
 {
 	return Lowercase(string(sv));
+}
+
+template<typename... Args> 
+std::string sformat(const char* fmt, Args... args) {
+	// Calculate required buffer size (excluding null terminator)
+	int size_s = std::snprintf(nullptr, 0, fmt, args...);
+	if (size_s < 0) return "";
+
+	// Allocate and format
+	uint64_t size = static_cast<uint64_t>(size_s) + 1; // +1 for null terminator
+	std::unique_ptr<char[]> buf(new char[size]);
+	std::snprintf(buf.get(), size, fmt, args...);
+
+	// Construct string (the constructor handles the null terminator)
+	return std::string(buf.get(), buf.get() + size_s);
 }

@@ -10,6 +10,7 @@ namespace data
 		std::string ProjectName;
 		std::string ConfigName;
 		bool Full = false;
+		bool Test = false;
 	};
 
 	inline CmdLineArgs_ CmdLineArgs;

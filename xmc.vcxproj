@@ -149,14 +149,17 @@
     <ClCompile Include="src\process\CmdLine.cpp" />
     <ClCompile Include="src\process\Emitter.cpp" />
     <ClCompile Include="src\process\Linker.cpp" />
+    <ClCompile Include="src\process\LoadModifiedSources.cpp" />
     <ClCompile Include="src\process\Parser.cpp" />
     <ClCompile Include="src\process\ProjectFile.cpp" />
     <ClCompile Include="src\process\Util.cpp" />
+    <ClCompile Include="src\process\Xmo.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
     <ClCompile Include="src\experiments.cpp" />
     <ClCompile Include="src\xmc.cpp" />
     <ClCompile Include="src\tool\Logger.cpp" />
     <ClCompile Include="src\tool\StringFunctions.cpp" />
+    <ClCompile Include="src\prebuild\XmaParser.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\AI dumps.txt" />
@@ -167,6 +170,7 @@
   <ItemGroup>
     <ClInclude Include="src\data\AltCodeBlocks.h" />
     <ClInclude Include="src\data\EmitterData.h" />
+    <ClInclude Include="src\data\SourceFileData.h" />
     <ClInclude Include="src\data\GlobalData.h" />
     <ClInclude Include="src\data\CodeBlock.h" />
     <ClInclude Include="src\data\LinkerData.h" />
@@ -176,22 +180,29 @@
     <ClInclude Include="src\data\XmoData.h" />
     <ClInclude Include="src\pch.h" />
     <ClInclude Include="src\data\CmdLineData.h" />
+    <ClInclude Include="src\data\Arena.h" />
     <ClInclude Include="src\process\CmdLine.h" />
     <ClInclude Include="src\process\Emitter.h" />
     <ClInclude Include="src\process\Linker.h" />
+    <ClInclude Include="src\data\MemoryData.h" />
     <ClInclude Include="src\process\Parser.h" />
     <ClInclude Include="src\process\ProjectFile.h" />
     <ClInclude Include="src\process\Util.h" />
     <ClInclude Include="src\stl.h" />
+    <ClInclude Include="src\tool\BS_thread_pool.hpp" />
     <ClInclude Include="src\tool\Coff.h" />
     <ClInclude Include="src\experiments.h" />
     <ClInclude Include="src\tool\Logger.h" />
     <ClInclude Include="src\tool\StringFunctions.h" />
     <ClInclude Include="src\tool\TextParser.h" />
     <ClInclude Include="src\win32.h" />
+    <ClInclude Include="src\prebuild\XmaParser.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\xm\Test01.xm" />
+    <None Include="src\prebuild\PrimaryCodeBlocks.xma" />
+    <None Include="tests\xmdev\extern.xm_" />
+    <None Include="tests\xmdev\xmdev.xmc" />
+    <None Include="tests\xmdev\Test01.xm_" />
     <None Include="tests\hello\hello.xmc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

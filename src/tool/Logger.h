@@ -1,33 +1,34 @@
 #ifndef SV_LOGGER
 #define SV_LOGGER
-
-#define FORCE_DEBUG_OUTPUT        // uncomment this to get debug output in the Release configuration
+#define FORCE_DEBUG_OUTPUT 
 
 #include <iosfwd>
 #include <ostream>
 #include <streambuf>
 #include <string>
+#include <mutex> // Added for thread safety
 
 extern bool StopLogger;
-
 void InitializeLogging();
 
-class Logger : public std::streambuf
-{
+class Logger : public std::streambuf {
 public:
-	Logger(std::ofstream* out, bool isErrorStream = false); 
+	Logger(std::ofstream* out, bool isErrorStream = false);
 	~Logger();
-
 	static const std::string Init();
-		
+
 private:
 	virtual std::streamsize xsputn(const char_type* s, std::streamsize n) override;
 	virtual int_type overflow(int_type c) override;
 	virtual int sync() override;
 
+	// Added helper for atomic line writes
+	void CommitLine(const std::string& line);
+
 private:
 	std::ofstream* output_;
-	bool isError_; 
+	bool isError_;
+	static std::mutex writeMutex; // Protects shared output
 };
 
 extern std::ostream osdebug;
@@ -35,7 +36,6 @@ extern std::ostream oserror;
 
 std::string GetLastErrorMessage();
 
-#define debug osdebug << __FILE__ << "(" << __LINE__ << "): "	
+#define debug osdebug << __FILE__ << "(" << __LINE__ << "): "
 #define errlog oserror << __FILE__ << "(" << __LINE__ << "): "
-
 #endif

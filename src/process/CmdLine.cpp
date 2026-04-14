@@ -9,9 +9,18 @@
 namespace process
 {
 	void ParseCommandLine(int argc, char* argv[]) {
-		if (argc < 2) {
-			oserror << "Usage: xmc [projectname] [config] full" << std::endl;
+		if (argc < 1) {
+			oserror 
+				<< "Usage: \n"
+				<< "  xmc [projectname] [config] full\n" 
+				<< "  xmc test" << endl;
+			;
 			throw std::runtime_error("Project name required.");
+		}
+
+		if (_stricmp(argv[0], "test") == 0)
+		{
+			data::CmdLineArgs.Test = true;
 		}
 
 		data::CmdLineArgs.ProjectName = argv[1];

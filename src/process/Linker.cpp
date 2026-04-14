@@ -184,11 +184,11 @@ namespace process
 		// Build the string
 		std::string args = " /NOLOGO";
 
-		// 1. Subsystem & Entry
+		// Subsystem & Entry
 		args += " /SUBSYSTEM:" + GetString("subsystem", "CONSOLE");
 		args += " /ENTRY:mainCRTStartup";
 
-		// 2. CRT Selection (Maps to your working set)
+		// CRT Selection (Maps to your working set)
 		std::string crt = Lowercase(GetString("crt", "static"));
 		if (crt == "static" || crt == "static-debug") {
 			// Since your current manual test uses debug libs:
@@ -196,12 +196,15 @@ namespace process
 			args += " /NODEFAULTLIB:ucrtd.lib /NODEFAULTLIB:vcruntimed.lib /NODEFAULTLIB:msvcrtd.lib /NODEFAULTLIB:msvcprtd.lib";
 		}
 
-		// 3. Process the .xmc lists
+		// Process the .xmc lists
 		AppendFromList(args, "libpaths", "/LIBPATH:");
 		AppendFromList(args, "staticlibs");  // No default ext needed, you have .obj in xmc
 		AppendFromList(args, "dynamiclibs"); // No default ext needed, you have .lib in xmc
 
-		// 4. Primary Input
+		// Throw away unused functions
+		args += " /OPT:REF /OPT:ICF";
+
+		// Primary Input
 		args += " " + data::CmdLineArgs.ProjectName + ".obj";
 		args += " /OUT:\"" + CmdLineArgs.ProjectName + ".exe\"";
 

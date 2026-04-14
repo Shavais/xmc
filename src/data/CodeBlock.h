@@ -9,9 +9,10 @@ namespace data
 	{
 		uint32_t reserveMask;
 		uint32_t releaseMask;
-		uint32_t altTableIndex;		// 0 for the last block in the chain, which is the spill-to-stack block.
+		int32_t	 altTableIndex;		// 0 for the last block in the chain, which is the spill-to-stack block.
+		uint8_t  cost;
 		uint16_t codeSize;
 		uint8_t  patchOffset;
-		uint8_t  code[49];			 
+		uint8_t  code[48];			 
 	};
 }

@@ -15,10 +15,15 @@ The xmc programming language
 3. Global Code Visibility
 
 - Anything in a global or namespaced scope that is anywhere in the code base is accessible from anywhere else, no includes, imports, or "using namespace" statements are required.
-- Code can be put into namespaces, but when referencing something, its namespace path only needs to be specified when there is ambiguity otherwise.
+- Things can be put into namespaces, but when referencing something, its namespace path only needs to be specified when there is ambiguity otherwise.
 - The translation unit (source code file) name is an optionally-specified first segment of a namespace path, so classes or functions of the same name can exist at the root of different files.
 - Namespace path prefixes can be shortened to the shortest set of segments that eliminates ambiguity.
-- Object files (.xmo) are created for translation units during compilation to speed up future compilation, but they may get recompiled if new code produces inferred type morphing.
+- Object files (.xmo) are created for translation units (.xm source files) during compilation to speed up future compilation.
+
+Symbols are stored with their scope id's. In a sharded global symbol table (in addition to be stored in .xmo file exports), together with their scope id.
+There is a global tree of scopes. 
+A given scope has a stack of enherited scope id's.
+
 
 4. Project Based Build System
 
@@ -39,8 +44,7 @@ A single linkable (.obj, on windows) is created for a target, in the intermediat
 The platform linker is invoked by the compiler (for now).
 The compiler places a single linked target output (.exe, etc.) in the output folder specified in the project file.
 
-The projectname.xmc file:
-
+Sample project file:
 _________
 # sample xmc Project File (hello.xmc)
 [base]                          # base config, overriden by the default or the selected config
@@ -69,54 +73,37 @@ intermediate = obj/x64/Release
 output = bin/x64/Release
 ---------
 
-data/ProjectData.h
-
-using ConfigSection = std::unordered_map<std::string, std::variant<std::string, int>>;
-inline std::unordered_map<std::string, ConfigSection> ProjectData;
-
-process/Project.h
-
-void ParseProjectFile(int argc, char* argv[]);           // prints an error with the line and character of a formatting problem
-    private to process/Project.cpp : bool ValidateConfigData();      // prints an error for required keys that aren't present in the base config, prints errors for invalid keys or values
-
-variant<string, int> GetConfigValue(const string& key);   // if not found (in either default or base section) logs an error, sets data::errorflag and returns ""
-int GetConfigValueInt(const string& key);                 // " " .. and returns 0
-string GetConfigValueStr(const string& key);              // " " .. and return ""
-
-
-5. Compile Time Inferred Type Morphing
+5. Compile Time Inferred Type Morphing And Conversions
 
 a. built-in types and their refinements:
 
 boolean:    b
 integer:    i8, i16, i32, i64, u8, u16, u32, u64
 float:      f32, f64
-decimal:    d16, d32, d64       - fraction type that maintains an integer numerator and denominator and doesn't incur floating point representation errors)
+decimal:    d16, d32, d64       - fraction type that maintains an integer numerator and denominator (and doesn't incur floating point representation errors)
 character:  c8, c16,            - single byte character, double byte character
             zs8, zs16, zs32     - zero-terminated string of c8's, of c16's
             s8, s16,            - length-specified (pascal) string of c8's, of c16's
             utf8, us            - unicode strings
 
-atomic  - qualifier that yields an atomic versions of the simple type (this is a hint; atomics are inferred when references to things are passed across threads).
+atomic  - qualifier that yields atomic versions of a simple type. (eg. atomic boolean) 
 
 built in structures and objects:
 
-struct      - no functions
+struct      - no functions (except as pointers), no coded constructors or destructors
+class
 list
 queue
 stack
-map         - binary tree
+btree       - binary tree
 hashset     
 hashmap
 function
-class
 arena
-pool
 heap
 (others to be determined)
 
-
-concurrent - qualifier that yields a concurrent version of a container (this is also a hint).
+concurrent - qualifier that yields a concurrent version of a container 
 
 These built-ins, structures and objects have various versions that the compiler infers between. 
 
@@ -158,7 +145,7 @@ User~mrrmrs u           - u is ifrmrs, actually, but any attempt to morph it hig
 
 Note that if an object is materialized (not a pointer), the raw/arc bit has no bearing. Raw/Arc is only relevant for pointers.
 
-b. variants
+b. Variants
 
 var u = Employee.Retrieve(id);      - u is a variant<User, ErrorNotFound>
 u = 99;                             - now u is a variant<User, ErrorNotFound, u8>
@@ -166,7 +153,38 @@ u.TailState = TailStates.Wagging;   - now u has an runtime added attribute of ty
 u.message = "woof!";                - another attribute of type sz8
 User u = Employee.Retrieve(id);     - u is User, if ErrorNotFound was returned, u is null
 
+if (u is User) {..}                 - built in is operator returns true if the tag typeid matches the supplied type
 
+c. Morphs And Conversions of Numeric Types
+
+When unrestricted, numeric types will upgrade in size (but not downgrade) and switch toward bigger floats (but not away from them).
+When restricted, numeric types will perform conversions.
+
+var n = 123;                        - n is a u8;
+n = 3.1415                          - oops, nope, it was an f16.
+n = 489029.28376                    - oh, actually it was an f64
+n = -39                             - still f64
+
+i8 i = 234;                         - this is a negative number. The i8 won't let it switch types or sizes.
+i := 13;                            - it's now a shared pointer to a heap allocated i8. numeric variables will morph refinements.
+
+mat i8 j = 96;                      - materialized i8.
+j := 13;                            - error. Can't reference assign to a materialized variable.
+
+raw i8 k = 97; 
+var p := k;                         - p is also raw.   [Our symbols have an rmask, which is the minimum/current rmask.. I guess they also need a maxrmask]
+
+arc q = k;                          - shared pointer q gets a heap allocated copy of k
+
+d16 d = 19.90d                      - No floats are used for this initialization. 
+
+For decimal initialization from a constant like this, the digits after the decimal are counted and the decimal is assigned 199/10.
+If a math operation overflows during compile time initialization, the fraction is converted to its minimal integer form and the operation is re-attempted.
+If it still overflows, a compile time error is emitted since this particular symbol is restricted from upgrading in size by having a specified type.
+ 
+Decimal operations will emit error results, either at compile time or at run time, if they would result in garbage values.
+The other numeric types just swallow conversion errors, but if you really need to, you can check a thread_local __carry and __overflow.
+The code is not generated to store it for you unless you use it in the scope where the operation was done.
 
 6. Ergonomic Control of Pointer Types
 
@@ -182,10 +200,16 @@ If v has local scope (is temporary), or lives in the same arena with mylist, it 
 If v is a class member or from a non-local scope, and does not live in the same arena with mylist, and was not qualified as raw, it becomes a shared pointer, and mylist becomes virtual. 
 (Normally, things on the right side of an operator don't morph, but reference assignment is an exception.)
 
+pointer declarations:
 
-7. First Class Arenas and Release Pools
+class Node {
+    ref Node next;              - Shared ownership
+    weak Node parent;           - Safe observer (becomes null if parent dies)
+    raw Node peer;              - fast, unsafe
+}
 
-a. Arenas
+
+7. First Class Arenas
 
 You can declare an arena, and put things into it, like this:
 
@@ -204,40 +228,24 @@ By default they are not.
 If you remove things from mylist, since it is in an arena, the count of items goes down, but the allocated size remains the same. You can't deallocate from an arena.
 You can grow things in there, but you can't shrink them.
 
-b. Release Pools
 
-You can declare a release pool, and put things into it, like this:
+8. Comprehensions
 
-release_pool r1;
+List and dictionary comprehension syntax and "native" json syntax is borrowed from Python, but the implementations morph from ~imfrhrss to whatever ends up being required.
 
-list myList:r1 = ["here", "we", "go", "again"];
-
-r1.drain()                                  - now, myList is empty.
-s16 myString:r1 = "what a lovely day!";     - now, r1 has two pointers to a pointer to a heap allocation. One for myList and one for myString.
-r1.drain()                                  - now, both myList and myString are empty. If you add to myList or assign a new string to myString, they get new allocations. But r1 still tracks them.
-
-for (var v in myList)
-{
-    .. here, v is a simple reference to an element, regardless of whether v or myList are in any arena or release pool.
-}
-
-
-8. List and Map Comprehensions
-
-var l = [upper(s) for s in name];   - list comprehension. Generates a list of whatever type of elements are in name. Initially ~ifrmrs.
+var l = [upper(s) for s in name];   // list comprehension. Generates a list of whatever type of elements are in name. Initially ~irmrhrss.
 
 Let's say name is a zs8 and its elements are c8's.
 
 l = [n*n for n in range(10)];       - now the elements of l are variants. Either c8's or integers. Not exactly ideal, but possible.
 
-l[6] = "woohoo!"                    - heh. yep. Legal. Now the possible variants are u8, c8 or zs8.
+l[6] = "woohoo!"                    - now the possible variants are u8, c8 or zs8.
 
 var v = l[6]                        - the variable v shadows whatever v was before. Now it's a variant, for the rest of the scope.
 
 if (v == 6*6) { print("maybe, but no"); }
 else if (v == "woohoo!") { print("there you go"); }
 else if (v == someObjectInstance) { print("nope"); }     - comparison's don't morph things, they just return false if they don't make sense.
-
 
 Functions may specify types they require, or they may take var types:
 
@@ -265,50 +273,49 @@ ref ss8 LastAssignedName;       - Now the compiler knows ahead of time that this
 ref var LastAssignedItem;       - This is a shared pointer to a morphing variant. Fun fun.
 
 
-class Node {
-    ref Node next;              - Shared ownership
-    weak Node parent;           - Safe observer (becomes null if parent dies)
-    raw Node peer;              - Blazing fast, totally unsafe
-}
+9. First Class null
 
-
-9. First Class Null
-
-The super special null value:
+Each built-in type has a null value.
 
 var n = null;                   - the compiler has no idea what this is yet. Defer judgement.
-if (n) DoSomething();           - A no-op. Doesn't make sense yet.
-n = true;                       - oh wait! It's a b8! Now null becomes false. (For b8's, null is false.) But DoSomething still doesn't get called above.                                 
-if (n) DoSomething();           - now it will do it.
+if (n) DoSomething();           - n has no type yet. More deferring. 
+n = true;                       - n is now a b8, so the above null becomes false, and the if statement can be coded (with a vector of machine code block ids)
+if (n) DoSomething();           - coded without any deferral.
 
-null has a special meaning for each simple type. For classes, it causes them to become "optionals", which have a special hidden b8 member, __assigned.
+null is mapped to a value for each simple type. 
+For materialize (non-pointer) structs and classes, assignment to null causes them to become fluid, and get a b8 attribute, __assigned, which is set to false.
+For pointers, assignment to null sets them to 0.
 
 User u = null;                  - a reference to a default constructed optional User instance that is flagged as unassigned.
 
 u.SetName("Kristy")             - ignored at run time, because of the "unassigned" flag. Source of bugs, yes. Maybe static analysis could warn about it.
 
 
-var okidokey = null;
-
 
 Resolving inference conflicts:
 
+var okidokey = null;        - deferred because of the var, and null's type is ambiguous. Deferreds that are never resolved become noops.
+
 User u;                     - Temporary. On the stack. Maybe not terribly useful in this case, but legal.
 
-u.SetName(okidokey)         - This passes a null zs8 into SetName and doesn't alter okidokey; passing a variable to a function doesn't morph the variable.
+u.SetName(okidokey)         - okidokey becomes an zs8 (at compile time). So the above code assigns an empty string, and this passes an empty string to SetName. 
+                              if okidokey is reference assigned in SetName, it becomes a virtual/arc - a shared pointer. 
 
-okidokey = "Sam";           - okidokey is now a sz8, but u.name is still null. Morphing doesn't retroactively affect values, only types.
+okidokey = "Sam";           - "Sam" is copied into okidokey; if okidokey is materialized, this won't affect things in SetName. 
+                              If it's virutal, things in SetName may be affected.
 
-okidokey = 99;              - okidokey becomes a variant with zs8 and i8 components. 
+okidokey = 99;              - okidokey becomes a variant with zs8 and u8 components. 
                               the zs8 component is still null, and that is the component that is passed to u.SetName above.
+
+okidokey = 1023985472       - inferred simple types will morph to larger versions. The u8 component becomes a u32. It won't morph back down.
+                              specifically declared simple types won't morph to larger versions.
 
 okidokey = MyObj.Create()   - This static factory returns an instance of MyObj. Reference? or copy? depends on optimization.
                               But okidokey's tagged union ends up with a materialized instance of a MyObj. (Copy assignment.) 
 
 okidokey := MyObj.Create()  - The MyObj in okidokey becomes a shared pointer (or a raw pointer if there is an arena in common) instead of a materialized instance. 
-                              The assignment above now copies the value into an allocated space pointed at by the shared pointer.
+                              When these statements are executed at run time, the assignment above will copy the value into an allocated space pointed at by the shared pointer.
                               
-
 other.Set(okidokey)         - If Set takes a specific type that is not in okidokey's union, this passes a null value of that type into the function.
                               If Set takes a var, any operators used in Set may morph their lvalues.
 
@@ -317,39 +324,43 @@ onemore := okidokey         - if onemore is a var, it becomes a shared pointer t
                               Assignment (and other operators) don't morph the right side except to make them into shared pointers when called for.                
 
 
-Passing things into functions may morph things inside those functions, but it does not morph what you're passing into it.
-Assignments and other binary operators may morph things on their left side, but they don't morph things on their right side..
-Exception: Reference assignments to things that are not shared pointers morph them into shared pointers, unless both sides live in the same arena.
+Passing things into functions may morph things inside those functions, but it does not morph what you're passing into it unless it has not yet been assigned a type.
+Assignments and other binary operators may morph things on their left side, but they don't morph things on their right side,
+except that reference assignments to things that are not shared pointers morph them into shared pointers, unless both sides live in the same arena.
 Copy assignments into shared pointers decref whatever they were pointing at, create a new allocation, and point the shared pointer at it.
 Copy assignments of arena managed objects into same-arena-managed raw pointers simply change where the raw pointer is pointing.
 
-Special cases for built-ins:
+Simple types may change size, as mentioned:
 
 c8 c = 'a';
 zs16 s = c;                 - s remains an zs16, and it now contains a single c16 whose value is 'a'.
+c = s;                      - c will not switch its base type or become variant because it was declared with a specific type. 
+                              c gets the least significant byte of the first character in s. 
+                              This potentially loses data and will emit a warning.
 
+var z := "stack zs8"        - z is a shared pointer that points at a heap allocation that contains the string. 
 
+10. Error Handling
 
-10. Ergonomic Error Handling
+a. The error Class Factory
 
-a. The error Type
+There is a special built in error construct that facilitates this kind of syntax:
 
-There is a special built in error type that facilitates this kind of syntax:
+error FileOpenFailed(zs8 message);              // class with an inferred constructor, member, functor that inherits from XmcError
+                                                // the functor returns a cloned instance of the class
 
-error FileOpenFailed(zs8 message); 
-
-This declares an error object with a constructor that takes a single parameter that is automatically forwarded to a member of the same name and type.
+This declares an error class with a constructor that takes a single parameter that is automatically forwarded to a member of the same name and type.
 To instantiate this error, you would type something like this:
 
-var result = FileOpenFailed(someErrorStr);      - err.message will have a copy of the value of someErrorStr
+var result = FileOpenFailed(someErrorStr);      // err.message will have a copy of the value of someErrorStr
 
 or this:
  
-error err = FileOpenFailed();       - null is passed as the message. err.message will be null
+error err := FileOpenFailed();    // shared pointer to a heap allcoation. When parameters are left out of function calls, null is passed for them. err.message is "".
 
 b. Error Blocks
 
-There is a special block type, which, if any function in that block returns a variant whose tagged value type is error, it immediately exits the block:
+There is a special block type, which, if any function in that block returns a variant whose tagged value type inhertis from error, it immediately exits the block:
 
 {? 
     var file = open("data.txt"); // If this returns Error, skip to the end of {?}
@@ -357,7 +368,27 @@ There is a special block type, which, if any function in that block returns a va
     print(head);                 // Neither does this
 ?} 
 
-c. Reaching
+
+c. Error Operator
+
+var u = database.find(id) | { errout("database.find failed: {u.message}"; return; }
+
+User u = u;
+u.login();
+
+
+11. Nested Scope Labels and Break;
+
+{:main
+    {:nested
+        if (someCondition) break :main;
+        if (otherCondition) break :nested;
+        DoStuff();
+    }
+    DoOtherStuff();
+}
+
+12. Reaching
 
 You can "reach" into a nested scope after the scope to pull out values
 
@@ -365,7 +396,7 @@ if (file is FileOPenFailed) { errout("failed to open data.txt: {file.message}\n"
 
 Variables in nested scopes are accessible in the parent scope afterward, but if the execution that populates them is skipped, their value will be null.
 
-d. Shadowing
+13. Shadowing
 
 Variables can also be shadowed:
 
@@ -379,22 +410,153 @@ if (u is User) {
 
 If you shadow a variable in the same scope, it is replaced by its shadow for the remainder of that scope.
 
-e. Error Operator
 
-var u = database.find(id) | { errout("database.find failed: {u.message}"; return; }
+14. External Call Definitions
 
-User u = u;
-u.login();
+// Explicit ABI mapping
+extern kernel32:WriteFile(
+    hFile:          u64 -> rcx,         // materialized u64 passed in RCX..
+    lpBuffer:       raw u8[] -> rdx,    // raw (non-arc pointer to a) u8 array passed in RDX
+    nBytes:         u32 -> r8,          // mat u32 passed in R8
+    lpWritten:      ref u64 -> r9,      // raw u64 pass in R9
+    lpOverlapped:   ref u64             // passed on the stack
+) -> u32:rax;
 
 
-f. Nested Scope Labels and Break;
+15. Functions
 
-{:main
-    {:nested
-        if (someCondition) break :main;
-        if (otherCondition) break :nested;
-        DoStuff();
-    }
-    DoOtherStuff();
+a. Named Functions
+
+The general function syntax borrows from C and C++.
+
+type SomeFunction(arguments...) {       // arguments separated by commas
+    statements                          // statements separated by semicolons
+    return somevalue;
 }
+
+There's no "void" type, for a void function you just skip the type.
+
+SomeProcedure(arg1, arg2){
+    DoSomeThings();
+    ..
+}
+
+You don't have to return, if you don't, null is returned. You can return without specifying a value, doing that returns null.
+
+b. Anonymous Functions
+
+There is no capture block specified for anonymous functions.
+
+(arguments){statements}
+
+The capture block is inferred based on what is used. Whether a capture is by value or reference depends on its refined type taking into consideration how its used.
+
+c. Variadic Functions
+
+print(arg1, arg2, args...){         
+    // arg1 and arg2 are named within the function
+    // argc has the anonymous argument count
+    // argv has the anonymous arguments, it is used syntactically like an array of variants whose type list depends on the types of arguments that were passed
+    // (exactly how argv is implemented depends on the context, hopefully we can come up with some optimizations)
+}
+
+d. Parameter Passing Syntax
+
+Parameters can be ommitted from right to left. They can omitted from left to right by naming a parameter.
+
+ThisProc(zs8 name, zs8 handle, u8 age){..}
+
+ThisProc("SuzyQ");
+
+ThisProc(handle="QueenB", 27);
+
+e. Function overloading
+
+If a function has a different return value or different parameters it is recognized as a different function.
+
+zs8 TransformString(arglist);                                           //
+s8 TransformString(arglist) { return TransformString(arglist); }        // different function, same arglist, converts a zs8 to an s8 and returns it.
+var s = TransformString(arglist);                                       // ambiguous call error.
+s8 s = TransformString(arglist);                                        // maybe not terribly efficient, but it works fine.
+
+16. Structs
+
+a. Struct Declaration
+
+Struct syntax is borrowed from C/C++, for the most part.
+
+struct TypeName         // TypeName is skippable, in which case we have an anonymous ustruct type
+{
+    typename variablename = defaultvalue;
+    ..
+} instanceName;         // instanceName is skippable, in which case nothing is instantiated.
+
+Structs don't have function members, per se, but they can have named pointers to functions.
+
+b. Instantiation and Initialization
+
+A struct always has a default constructor that takes arguments matching its member list.
+
+var s = SomeStruct {membervalue1, ...};         // initialization block parameters are assigned to struct members in the order they appear in the struct declaration
+                                                // they can be omitted right to left, ommitted values become null
+
+SomeStruct s = {membervalue1, membername3 = membervalue3, membervalue4, ..};       // they can be named, they can be skipped left to right by naming them
+
+s = {arglist..};                                // they can be reassigned later using brace syntax.
+
+s = [{arglist..}, {arglist..}, ..][selector];                                       // list comprehension used to select an assignment specifier
+s = {"this": {arglist..}, "that": {arglist..}, "other": {arglist..}}[selector];     // dictionary comprehension used to select an assignment specifier
+
+c. implicit construction
+
+You can pass construction parameters to functions that take a struct just like you can in C++.
+
+d. Struct Inheritance
+
+A struct can inherit from multiple other structs.
+
+
+
+17. Classes
+
+Classes are the same as structs except they have function members, and you can supply coded constructors and destructors.
+
+class MyClass {
+    MyClass() {};
+    ~MyClass {};
+}
+
+
+18. Generators, ranges and slices
+
+a. generators
+
+i8 MyGen(){
+    for (i = 1; i<10; i++) yield i;     // you can say for (myvar ... ) and it'll infer the type
+}
+
+The generated i8's from the above generator can be consumed, for example, like this:
+
+    for (n in Mygen()) print(n);        // you can also say "myvar in .." and it'll infer the type
+
+    var n := MyGen.start();
+    while (!MyGen.finished) {
+        n := MyGen.next();
+    }
+
+The compiler merges the generator emmitted code with the consumer emmitted code for you.
+
+(I wonder if Gemini and I, between the two of us, will be smart enough to figure out a way
+to perform that merging in a way that will fairly reliably result in efficient emitted code.)
+
+var l = [print(n) for n in MyGen()];        // list comprehensions are actually generators - so this is a generator within a generator.
+
+
+b. Ranges and slices
+
+r = range(1, n);            // r is a pointer to an unmerged generator
+for x in r;                 // merge happens here
+
+x = [1, 2, 3, 4][1:]        // 
+"hello world!"[s:-1]
 

@@ -42,6 +42,8 @@ public:
 
 	uint32_t PushRawSymbol(const RawSymbol& sym);
 
+	void AddRawBytes(uint16_t sectionIdx, const std::vector<uint8_t>& data);
+
 	uint32_t DefineSymbol(const std::string& name, uint32_t value, uint16_t sectionIdx, uint8_t storageClass);
 		
 	// Helper to add a relocation to a specific section

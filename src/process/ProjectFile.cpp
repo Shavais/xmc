@@ -5,10 +5,11 @@
 #include <fstream>
 
 #include "data/CmdLineData.h"
-#include "tool/TextParser.h"
-#include "tool/Logger.h"
+#include "data/GlobalData.h"
 #include "data/ProjectFileData.h"
 
+#include "tool/Logger.h"
+#include "tool/TextParser.h"
 
 namespace process
 {
@@ -27,7 +28,7 @@ namespace process
 		file.seekg(0);
 		file.read(buffer.get(), size);
 
-		TextParser parser(std::string_view(buffer.get(), static_cast<size_t>(size)));
+		TextParser parser(std::string_view(buffer.get(), static_cast<uint64_t>(size)));
 
 		std::string currentSection = "base"; // Default to base if settings appear before a header
 
@@ -116,6 +117,19 @@ namespace process
 		{
 			section = data::RawProjectFile[data::CmdLineArgs.ConfigName];
 			for (const auto& [key, value] : section) data::ProjectFile[key] = value;
+		}
+
+		if (data::ProjectFile.contains("maxthreads"))
+		{
+			auto& val = data::ProjectFile["maxthreads"];
+
+			if (const int* i = std::get_if<int>(&val)) {
+				if (*i >= 0 && *i <= 255) data::MaxThreads = static_cast<uint8_t>(*i);
+				else oserror << "Error: 'maxthreads' value " << *i << " is out of range (0-255)." << std::endl;
+			}
+			else if (const std::string* s = std::get_if<std::string>(&val)) {
+				oserror << "Error: 'maxthreads' value (" << *s << ") is not a valid integer." << std::endl;
+			}
 		}
 
 		// write out effective ProjectFile contents:

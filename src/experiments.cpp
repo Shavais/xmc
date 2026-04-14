@@ -7,10 +7,14 @@
 #include <windows.h>
 
 #include "data/EmitterData.h"
+#include "data/ParserData.h"
 #include "data/PrimaryCodeBlocks.h"
 #include "process/Emitter.h"
 
 #include "tool/Coff.h"
+
+using namespace data;
+using namespace process;
 
 int Hello() {
 
@@ -121,7 +125,7 @@ void RunInMemory() {
 	uint64_t addrGetStdHandle = (uint64_t)GetProcAddress(k32, "GetStdHandle");
 	uint64_t addrWriteFile = (uint64_t)GetProcAddress(k32, "WriteFile");
 
-	size_t totalSize = 4096;
+	uint64_t totalSize = 4096;
 	uint8_t* mem = (uint8_t*)VirtualAlloc(NULL, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	if (!mem) return;
 
@@ -370,67 +374,80 @@ void CallCppFunction2() {
 	delete xmoMain;
 }
 
-
 void CallCppFunction3() {
 	using namespace process;
-	using namespace data;
 
-	// --- 1. Define XMO 1: WriteToConsole ---
-	Xmo* xmoHelper = new Xmo();
+	// --- Setup Helper XMO (WriteToConsole) ---
+	data::Xmo* xmoHelper = new data::Xmo();
 	xmoHelper->name = "WriteToConsole";
 
-	// Setup function data (just shadow space, no locals)
-	FunctionNodeData* helperFunc = new FunctionNodeData();
-	helperFunc->localSize = 0;
+	// push export
+	data::XmoExport helperExp;
+	helperExp.name = "WriteToConsole";
+	helperExp.offset = 0; // Fixed by emitter
+	xmoHelper->exports.push_back(helperExp);
 
-	// Root node for the function
-	ParseTreeNode* helperRoot = new ParseTreeNode();
-	helperRoot->funcData = helperFunc;
+	data::FunctionNodeData* hFunc = new data::FunctionNodeData();
+	hFunc->name = "WriteToConsole";
+	hFunc->isLeaf = false;     // Signals that it calls SVGE_Log
+	hFunc->exportIdx = 0;
+	// 32 (shadow space) + 8 (padding/alignment) = 40 (0x28)
+	hFunc->totalStackSize = 40;
 
-	// Blocks: LEA rcx, [msg] -> CALL SVGE_Log
-	helperRoot->blockId = { bid.lea_rcx_rel, bid.call_rel32 };
-	helperRoot->patchSymbol = { "msg", "SVGE_Log" };
+	data::ParseTreeNode* hRoot = new data::ParseTreeNode();
+	hRoot->funcData = hFunc;
 
-	xmoHelper->parseTree = helperRoot;
+	// Body only: Emitter injects prologue/epilogue automatically
+	hRoot->codeBlocks = { bid.lea_rcx_rel, bid.call_rel32 };
+	hRoot->patchSymbols = { "msg", "SVGE_Log" };
+	xmoHelper->parseTree = hRoot;
 
-	// --- 2. Define XMO 2: Main Entry ---
-	Xmo* xmoMain = new Xmo();
+
+	// --- Setup Main XMO (main) ---
+	data::Xmo* xmoMain = new data::Xmo();
 	xmoMain->name = "main";
 
-	FunctionNodeData* mainFunc = new FunctionNodeData();
-	mainFunc->localSize = 0;
+	// push main export
+	data::XmoExport mainExp;
+	mainExp.name = "main";
+	xmoMain->exports.push_back(mainExp);
 
-	data::ParseTreeNode* mainRoot = new data::ParseTreeNode();
-	mainRoot->funcData = mainFunc;
+	// push msg export 
+	data::XmoExport msgExp;
+	msgExp.name = "msg";
+	xmoMain->exports.push_back(msgExp);
 
-	// Blocks: CALL WriteToConsole
-	mainRoot->blockId = { bid.call_rel32 };
-	mainRoot->patchSymbol = { "WriteToConsole" };
+	data::FunctionNodeData* mFunc = new data::FunctionNodeData();
+	mFunc->name = "main";
+	mFunc->isLeaf = false;     // it calls WriteToConsole
+	mFunc->exportIdx = 0;
+	mFunc->totalStackSize = 40;
 
-	xmoMain->parseTree = mainRoot;
+	data::ParseTreeNode* mRoot = new data::ParseTreeNode();
+	mRoot->funcData = mFunc;
 
-	// --- 3. Manually add Data Export to xmoMain ---
-	// (Since the Emitter doesn't handle static data/strings yet)
-	std::string text = "XMC Block Stitching Success!\n";
-	xmoMain->codeBuffer.insert(xmoMain->codeBuffer.end(), text.begin(), text.end());
-	xmoMain->codeBuffer.push_back(0);
+	// Body only: 1 block, 1 symbol. Perfect alignment.
+	mRoot->codeBlocks = { bid.call_rel32, bid.xor_eax_eax }; // Add this: 31 C0 or 33 C0
+	
+	mRoot->patchSymbols = { "WriteToConsole" };
 
-	data::XmoExport msgExport;
-	msgExport.name = "msg";
-	msgExport.offset = 0; // It's at the start of the buffer for now
-	xmoMain->exports.push_back(msgExport);
+	// Setup Static Data for "msg"
+	data::StaticData sData;
+	sData.name = "msg";
+	sData.exportIdx = 1;
+	std::string text = "XMC Success!\n";
+	sData.bytes.assign(text.begin(), text.end());
+	sData.bytes.push_back(0); // Null terminator
+	mRoot->staticData.push_back(sData);
 
-	// --- 4. The Pipeline ---
-	std::vector<data::Xmo*> xmos = { xmoHelper, xmoMain };
+	xmoMain->parseTree = mRoot;
 
-	// Pass 1: Emit (This populates codeBuffer and relocs based on the trees)
-	UpdateXmoCode(xmos, 4);
+	// --- The Pipeline ---
+	std::vector<Xmo*> xmos = { xmoHelper, xmoMain };
 
-	// Pass 2: Link
-	WriteToCoff(xmos, "hello_stitched.obj");
+	// Threads for the Thread Pool
+	UpdateXmoCode();
+	WriteToCoff(xmos, "hello.obj");
 
-	// Cleanup
-	// Note: In reality, you'd delete the recursive tree nodes too!
-	delete helperFunc; delete helperRoot; delete xmoHelper;
-	delete mainFunc; delete mainRoot; delete xmoMain;
+	// Cleanup: In production, delete your tree pointers!
 }

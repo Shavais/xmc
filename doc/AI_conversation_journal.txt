@@ -892,3 +892,2023 @@ String Table:
 
 Long Names: Symbol names exceeding 8 bytes
 
+
+==========
+04/09/2026 (12:33 am)
+
+
+I don't like typing (uint16_t)data::BlockIds::some_block_id, so I put a using namespace data a the top of the process files and I made a struct, like this:
+
+inline struct BlockIds 
+{
+	uint16_t
+		prologue = 0,
+		epilogue = 1,
+		lea_rcx_rel = 2,
+		call_rel32 = 3
+	;
+} bid;
+
+so that way instead of (uint16_t)data::BlockIds::some_block_id I just type bid.some_block_id.
+
+So I'm doing that for the ParseNodeVectorIds as well:
+
+inline struct ParseNodeVectorIds {
+    uint16_t
+        some_vector = 0,
+        some_other_vector = 1,
+        ..
+    ;
+} pvid;
+
+Here's what I'm imagining for parse node vectors:
+
+inline vector<vector<int16_t>> ParseNodeVectors = {
+    // some_vector ..
+    { some_block_id, some_other_block_id, .. REF, refchainstartidx, another_block_id, .. },
+    // some_other_vector
+    { .. }
+};
+
+inline vector<vector<int16_t>> RefinementVectors = {
+    // some_rvector_irmrhrss ..
+    { [max rmask for this refinement vector], [next alternate rvector id], block_id_x, block_id_y, .. },
+    { ... }
+};
+
+If a refinement vector with a next alternate of 0 is encountered, and the max rmask is not big enough to cover the passed in rmask, an "unsupported refinement" error
+is emitted, which the parser can try to add some context to.
+
+Not all parse nodes will have any code in their code blocks. Some parse nodes just define symbols or act as containers for other nodes. Like scope nodes, which do both:
+
+
+
+---
+
+The reserve mask has been intended to mean that after that block, those registers are reserved (not available for use). 
+The release mask has meant that after that block, those registers are released for use.
+But it seems like blocks don't, by themselves, know what registers are released for use.
+They only really know what registers they themselves use. 
+
+
+I don't think the emitter should know or care about the masks. 
+I think we should eliminate the release mask from the code blocks.
+Using a code block doesn't mean those registers are available after that.
+The parser hasn't been written yet.
+In an earlier session, I floated the idea of creating a graph of potential ways to implement a scope, with cost weights, and then using a path finding algorithm to produce an optimal path.
+
+
+Right now there's one table of CodeBlocks that are intended to be used both by the parser and by the emitter. 
+The parser needs the reserve mask and the cost.
+I could create a separate struct, XmoCodeBlock, that is stripped down, but then we'd have to copy data from the main code blocks to the emitter code blocks.
+
+
+Consider this source:
+
+f64 n = 1;
+f16 pi = 3.1415962;
+for (u8 i = 1; i<10; i++) n *= pi;
+
+We have to make sure that any path through our graph for that results in n containing 1, pi containing 3.1415962, i going through the range 1 through 9, 
+and n ending up with the correct value. Our graph has to make sure all that happens. And that's what I'm not sure how to accomplish.
+
+
+
+So we're talking about compiler code that is associated with, for example, an assignment into a variable. (An operation on a type.) That code knows we need 
+a milestone of getting the right hand side result into the left hand side thing. But that could be complicated. We could be looking at something like this..
+
+myList[i] = (some expression involving nested parenthesis, booleans, isolated function calls and fluent sequences of function calls)
+
+I guess the graph for the current scope basically delivers things to function calls, retrieves results and does things with those results and then ultimately
+might return a result to the calling scope. 
+I guess the text we're parsing directs the compiler to compiler code which sets up the milestones, and then when it reaches the end of the scope, 
+It runs the finder to produce our vector of block id's and reloc's for that scope.
+So blocks are edges, and states are nodes. 
+How do you build the graph of possible ways to get from some state A to some other state B without it just being infinitely large?
+
+
+I dunno, this graph notion sounds complicated, long and difficult to implement, and potentially slow. 
+My original idea was that parsing source code results in trees of operations of types.
+An operation of a type has a preconstructed vector of block ids which is pre-optimized.
+Each block in the sequence has a register mask of what that block uses.
+Blocks have an int32_t altTableIndex which is the index of the next alternate block in the AltCodeBlocks table.
+An alternate to a block accomplishes the same thing as the original, but with different registers.
+If a block as a -1 altTableIndex, that's the final alternate, it's a spill block.
+In debug mode, when a verbose setting is used, when a spill block is encountered, some output is generated.
+That way we can review the spills, and look at the block id vectors that led up to them and see if there's a better way to arrange those vectors.
+
+So this is a fairly simple and quick set up, the only lingering question in my mind about it is how do we know when registers are released for use.
+
+Rather than doing many short forward scans, I wonder if we can leave vectors unfinalized, and just track the last spot where a variable was used, 
+and when we reach the end of a scope we can go back and finalize the vectors.
+
+
+Oh I forgot to mention, scopes that can be reached into have to be labeled like this:
+
+{
+    {:child
+        u8 i = 5;
+    }
+    u8 finalI = child.i;
+}
+
+We also have a break :label statement:
+
+{
+
+    {:outer
+        {:inner
+            if (DoSomething()) break :outer;
+            else if (condition) break :inner;
+            else DoSomethingElse();
+        }
+        MightBeSkipped();
+    }
+    NotSkipped();
+}
+
+
+==========
+04/10/2026
+     
+I don't know why we wouldn't use the standard conventions for register allocation, 
+unless you can think of some reason to use a different way.
+
+Ok, so, our work flow:
+
+1. I'll write a snippet of xcm code in an .xm file that demonstrates a new feature(s).
+2. We'll try and get the compiler compiling that.
+    a. We'll design and implement any other data structures or logic that the parser needs in order to support that feature.
+    b. We'll manually produce the optimized machine code needed for the xcm code snippet.
+    c. We'll work on the blocks and the parser and get the parser producing that code for that snippet while still producing optimized code for previous snippets.
+
+>>>
+That workflow is solid and follows a classic Test-Driven Development (TDD) pattern for compiler engineering. By manually crafting the "perfect" assembly first, you establish a gold standard for the parser to aim for.
+Proposed Feature Roadmap
+Logical Zeroing (xor eax, eax):
+Snippet: u32 x = 0;
+Goal: Ensure the parser picks the Cost 0 xor block instead of a standard mov.
+Arithmetic & Clobbering:
+Snippet: u64 a = 5; a += 10;
+Goal: Implement the add rax, imm block and verify the reserveMask prevents the parser from using rax for something else mid-math.
+Local Variables (The Stack):
+Snippet: u8 a = 1; u8 b = 2; u8 c = a + b;
+Goal: Force a spill by artificially lowering maxThreads or using more variables than registers. Verify the altTableIndex successfully triggers the spill blocks.
+Reach-In Scopes:
+Snippet: { { u8 i = 10; } u8 j = i; }
+Goal: Verify the Back-Patch liveness logic keeps the register for i alive until the parent scope finishes its "reach-in."
+Standard Conventions
+Stick to the Windows x64 Calling Convention as your default. It’s highly documented and makes your .obj files play nice with standard linkers.
+Volatile (Caller-Saved): RAX, RCX, RDX, R8, R9, R10, R11.
+Non-Volatile (Callee-Saved): RBX, RBP, RDI, RSI, R12-R15.
+Ready to start? Paste the contents of your first .xm snippet when you've got it, and we'll map out the necessary XMO structures and Block IDs to get it running.
+Pro-tip: For the manual optimization step (2b), we can use the DUMPBIN output we've been looking at as a template for what the final "clean" code should look like.
+<<<
+
+
+I like your 4 suggestions there, but we need an entry point function. So we'll but your code in a main function. 
+
+
+---
+
+I'm working on a compiler for a new language called "xcm" for "X Morphing Compiler". 
+
+I already have the projectfile put together and working to the extent that the program is formulating the correct platform linker command arguments 
+based on the project file and calling the platform linker, but now we need it to locate and load the modified .xm's (source files) in the source tree,
+and write out the .xmo's after producing them. I'd also like to have it time the compile step and the link step. 
+
+Here's how I envision the process:
+
+    GetModifiedSourcePaths          - populates a list of modified .xm paths and their associated .xmo paths
+        WalkFsTree                  - walks a filesystem tree under a specified parent folder, returns the file modtimes and relative pathnames that match a specified mask 
+    LoadModifiedSources             - loads the .xm (source) files and starts new .xmo's where either the .xmo doesn't exist or the mod time of the source file > .xmo mod time
+    ParseModifiedSources            - creates parse trees, scope trees, symbol exports and relocations in the .xmo's for each loaded .xm, marking up symbol refinements in the process;
+                                        when symbols of an .xmo are created or modified, that marks that .xmo as dirty
+                                        if a refinement of a symbol that hasn't been loaded is required, a flag is set indicateding a full scan is required
+  if a full scan is required:
+    LoadXmos                        - loads all the parse trees of the currently loaded .xmo's, and everything from the .xmo's of the unmodified .xm's
+    FullScan                        - sets all symbol refinements to 0 and scans all the parse trees and marks up all symbol refinements, 
+                                        marking .xmo's as dirty whose symbol tables are modified by this process  
+  if no full scan is required:
+    LoadPartialXmos                 - loads the exports, relocations and machine code blocks for all the .xmo's that aren't already loaded. (Everything required for UpdateXmoCode.)
+  
+  either way:
+    UpdateXmoCode                   - builds the the machine code blocks of Xmos that have parse trees loaded or created
+    SaveXmos                        - saves dirty xmo's
+    WriteCoffFile                   - write the output coff file
+
+The above processes can be parallelized to some extent, I think, although I may end up limiting the number of threads running at a time to prevent CPU overheating:
+
+GetModifiedSourcePaths can launch a thread for the source folder tree where the xm's are and another thread for the intermediate folder where the xmo's are.
+WalkFsTree can launch a thread per folder and then wait for those threads to complete 
+LoadModifiedSources can launch a thread per file (and wait for those threads to complete).
+ParseModifiedSources can launch a thread per file.
+LoadXmos can launch a thread per file.
+FullScan can launch a thread per file.
+LoadPartialXmos can launch a thread per file.
+UpdateXmoCode can launch a thread per xmo.
+SaveXmos can launch a thread per xmo.
+WriteCoffFile has to be single threaded.
+
+I already have WriteToCoff implemented, and hopefully it won't need to change much. 
+I also have the emitter, WriteXmoFile, implemented, hopefully it won't change much either, going forward.
+So I'm almost ready to start working on ParseModifiedSources, but I'd like to knock out the rest of process first, except for FullScan, I'll leave that for last.
+
+So I need an implementation for GetModifiedSourcePaths. 
+
+#include "data/ProjectFileData.h"
+
+namespace process
+{
+    void GetModifiedSourcePaths()
+    {
+    }
+}
+
+Here's ProjectFileData.h:
+
+#pragma once
+
+#include <unordered_map>
+#include <string>
+#include <variant>
+
+namespace data
+{
+	using ConfigSection = std::unordered_map<std::string, std::variant<std::string, int>>;
+	inline std::unordered_map<std::string, ConfigSection> RawProjectFile;
+	inline ConfigSection ProjectFile;
+	inline std::string DefaultConfig;
+}
+
+Here's the project file:
+
+[base]                          # base config, overriden by the default or the selected config
+Arch = x64
+Type = exe
+EntryFile = xmdev               # names the .xm file that contains the entry function (defaults to the project name)
+EntryFunc = main                # names entry point function (defaults to "main", as is set here)
+Subsystem = console
+LibPaths = [
+    C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64, 
+    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/ucrt/x64,
+	C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
+]
+StaticLibs = []
+DynamicLibs = [kernel32.lib, shell32.lib]
+SourceRoot = .                  # optional, the default is the current working directory, as is set here
+
+[debug:default]                 # a config doesn't have to be debug or release, it can have any name
+CRT = dynamic-debug             # static, dynamic, static-debug, dynamic-debug (plan to switch to static later, but for dev speed, doing this)
+DebugSymbols = yes
+IntPath = .
+Output = .
+
+[release]
+CRT = dynamic                   # static, dynamic, static-debug, dynamic-debug
+DebugSymbols = no
+IntPath = .
+Output = .
+
+Here's how I'm handling multi-threading:
+
+ 		BS::thread_pool pool(maxThreads);
+
+		for (data::Xmo* xmo : xmos) {
+			pool.detach_task([xmo]() {
+				try {
+					uint32_t liveMask = 0;
+					std::vector<EmitterFuncContext> funcStack;
+
+					// Trigger the recursive tree walk
+					if (xmo != nullptr && xmo->parseTree != nullptr) {
+						ProcessNode(xmo, xmo->parseTree, funcStack);
+					}
+				} 
+				catch (...) {};
+			});
+		}
+		pool.wait();
+
+
+I'm getting a compiler error:
+
+1>C:\Shavais\Projects\C++\xmc\src\process\LoadModifiedSources.cpp(17,20): error C2955: 'BS::thread_pool': use of class template requires template argument list
+
+
+The GetModifiedSourcePaths function should be called LoadModifiedSources, and it should load the modified source files into memory for parsing. 
+
+// data/SourceFileData.h
+#pragma once
+
+#include <filesystem>
+#include <unordered_map>
+
+namespace data {
+	struct FileInfo {
+		std::filesystem::path fullPath;
+		std::filesystem::file_time_type lastWriteTime;
+		std::string sourceText;
+	};
+	inline std::unordered_map<std::string, FileInfo> SourceFiles;
+	inline std::unordered_map<std::string, FileInfo> ObjectFiles;
+	inline std::vector<std::string> ModifiedSources;
+}
+
+--
+
+#include "pch.h"
+
+#include "tool/BS_thread_pool.hpp"
+
+1>C:\Shavais\Projects\C++\xmc\src\process\LoadModifiedSources.cpp(67,50): error C2039: 'at': is not a member of 'std::basic_ios<char,std::char_traits<char>>'
+
+Is ifstream the fastest way to load a whole textfile into memory?
+
+--
+
+ssd's do not have seek times. Let's create a function to load a file into memory using memory mapped files.
+
+--
+
+#include "pch.h"
+
+#include "data/ProjectFileData.h"
+#include "data/SourceFileData.h"
+#include "tool/BS_thread_pool.hpp" 
+#include "tool/Logger.h"
+#include "win32.h"
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
+       
+osdebug << "LoadModifiedSources: " << data::ModifiedSources.size() << " files loaded in " << std::fixed << std::setprecision(3) << diff.count() << " seconds." << endl;
+
+I changed from printf to using my osdebug log stream, but I think I might actually like your printf statement better. It's certainly more concise. 
+But I want to use a custom logger, so I can shut it off in release mode and control things like debug verbosity, so I'm tempted to use sprintf in conjunction with osdebug.
+
+We may need to create a version of FastLoadFile that returns a vector<uint8_t>.
+ 
+Speaking of which, let's work on void SaveXmos();
+
+Here's a test function which creates two faked xmo's with their parse trees for testing:
+
+void CallCppFunction3() {
+	using namespace process;
+
+	// --- Setup Helper XMO (WriteToConsole) ---
+	data::Xmo* xmoHelper = new data::Xmo();
+	xmoHelper->name = "WriteToConsole";
+
+	// push export
+	data::XmoExport helperExp;
+	helperExp.name = "WriteToConsole";
+	helperExp.offset = 0; // Fixed by emitter
+	xmoHelper->exports.push_back(helperExp);
+
+	data::FunctionNodeData* hFunc = new data::FunctionNodeData();
+	hFunc->name = "WriteToConsole";
+	hFunc->isLeaf = false;     // Signals that it calls SVGE_Log
+	hFunc->exportIdx = 0;
+	// 32 (shadow space) + 8 (padding/alignment) = 40 (0x28)
+	hFunc->totalStackSize = 40;
+
+	data::ParseTreeNode* hRoot = new data::ParseTreeNode();
+	hRoot->funcData = hFunc;
+
+	// Body only: Emitter injects prologue/epilogue automatically
+	hRoot->codeBlocks = { bid.lea_rcx_rel, bid.call_rel32 };
+	hRoot->patchSymbols = { "msg", "SVGE_Log" };
+	xmoHelper->parseTree = hRoot;
+
+
+	// --- Setup Main XMO (main) ---
+	data::Xmo* xmoMain = new data::Xmo();
+	xmoMain->name = "main";
+
+	// push main export
+	data::XmoExport mainExp;
+	mainExp.name = "main";
+	xmoMain->exports.push_back(mainExp);
+
+	// push msg export 
+	data::XmoExport msgExp;
+	msgExp.name = "msg";
+	xmoMain->exports.push_back(msgExp);
+
+	data::FunctionNodeData* mFunc = new data::FunctionNodeData();
+	mFunc->name = "main";
+	mFunc->isLeaf = false;     // it calls WriteToConsole
+	mFunc->exportIdx = 0;
+	mFunc->totalStackSize = 40;
+
+	data::ParseTreeNode* mRoot = new data::ParseTreeNode();
+	mRoot->funcData = mFunc;
+
+	// Body only: 1 block, 1 symbol. Perfect alignment.
+	mRoot->codeBlocks = { bid.call_rel32, bid.xor_eax_eax }; // Add this: 31 C0 or 33 C0
+	
+	mRoot->patchSymbols = { "WriteToConsole" };
+
+	// Setup Static Data for "msg"
+	data::StaticData sData;
+	sData.name = "msg";
+	sData.exportIdx = 1;
+	std::string text = "XMC Success!\n";
+	sData.bytes.assign(text.begin(), text.end());
+	sData.bytes.push_back(0); // Null terminator
+	mRoot->staticData.push_back(sData);
+
+	xmoMain->parseTree = mRoot;
+
+	// --- The Pipeline ---
+	std::vector<Xmo*> xmos = { xmoHelper, xmoMain };
+
+	// Threads for the Thread Pool
+	UpdateXmoCode(xmos, 4);
+	WriteToCoff(xmos, "hello.obj");
+
+	// Cleanup: In production, delete your tree pointers!
+}
+
+Here's the xmo data:
+
+// data/XmoData.h
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <memory>
+#include <vector>
+
+#include "CodeBlock.h"
+#include "ParserData.h"
+
+namespace data
+{
+
+	struct XmoScope {
+		uint32_t id;
+		uint32_t parentId;   // 0 for Global
+		std::string name;    // Optional: for debugging or namespaces
+	};
+
+	struct XmoImport { // Renamed from Relocation for clarity
+		std::string targetSymbol;
+		uint32_t expectedMask;   // <--- What we thought it was when we compiled
+	};
+
+	struct XmoExport {
+		std::string name;
+		uint32_t offset;
+		uint32_t refinementMask;
+		uint32_t scopeId;
+	};
+
+	struct XmoRelocation {
+		std::string targetSymbol; // Name of what we are calling
+		uint32_t offset;          // Offset in this Xmo's code to patch
+		uint16_t type;            // e.g., IMAGE_REL_AMD64_REL32
+	};
+
+
+	class Xmo {
+	public:
+		std::string name;
+		std::vector<uint8_t> codeBuffer;
+		std::vector<XmoExport> exports;
+		std::vector<XmoRelocation> relocs;
+		std::vector<XmoScope> scopeTree;
+		ParseTreeNode* parseTree;
+		uint32_t tempGlobalOffset;
+	};
+
+	inline vector<Xmo*> Xmos;
+
+}
+
+If you leave numbers out of the comments you put in the source code, your comments last longer.
+
+--
+
+I moved the application includes below the stl includes.
+I added #include "tool/Logger.h" which provides osdebug.
+
+Let's make a variadic utility function, string sformat(text, fmt, args..), that wraps sprintf and returns a string.
+
+--
+
+Escellent work on sformat! 
+You removed the text parameter, which is correct, that was an oversight on my part.
+A string literal can be passed for that const char * and any types of args can be used that work with std::snprintf. Very nice.
+
+osdebug << sformat("SaveXmos: %zu files saved in %.3f seconds.", data::Xmos.size(), diff.count()) << endl;
+
+Please try to avoid putting comments in code that start with numbers. 
+Just put the comments in without the numbers.
+I took the numbers out of the comments and added sformat to tool/StringFunctions.h.
+
+The existing emitter writes a single COFF file for an entire project. 
+The project consists of multiple .xm source files. 
+There's an .xmo file per .xm file.
+I don't have any WriteXmoFile function.
+We need to create a folder tree for .xmo files under the intermediate directory that mirrors the folder tree under the source folder.
+
+-- 
+
+I forgot to mention that for a full build, we should remove existing xmo folders in the intermediate area (to delete folders that have been deleted from the source tree)
+but there may be folders in there that are not for xmos, that we don't want to delete, so I think we need an xmo folder under the intermediate directory.
+
+// data/CmdLineData.h
+#pragma once
+
+#include <string>
+
+namespace data
+{
+	struct CmdLineArgs_
+	{
+		std::string ProjectName;
+		std::string ConfigName;
+		bool Full = false;
+	};
+
+	inline CmdLineArgs_ CmdLineArgs;
+}
+
+--
+
+I put the stl includes above app includes, alphebetized the app includes, and put a line space between the folders:
+
+#include "pch.h"
+
+#include <filesystem>               // stl includes go above application includes except for the file's correlated header
+
+#include "data/CmdLineData.h"       // application includes are alphebetized with an empty line between folders
+#include "data/ProjectFileData.h"
+#include "data/SourceFileData.h"
+#include "data/XmoData.h"
+
+#include "tool/BS_thread_pool.hpp"
+#include "tool/Logger.h"
+#include "tool/StringFunctions.h"
+
+Please do that going forward, if you present includes.
+
+WriteToCoff serializes the XMO's and creates the COFF output file for the project. 
+It is already implemented and tested.
+
+Excellent work so far, now we need the "serialize xmo data" part.
+Should I repost XmoData.h?
+
+--
+
+Later we'll have to add a parse tree to the xmo. 
+This looks good. It looks pretty efficient, I think, although I wonder about ofstream.
+Is there a faster way to write out a binary file?
+
+--
+
+    ..
+	// Write the file
+		FastWriteBinaryFile(outPath.string(), buf);
+    ..
+
+	void FastWriteBinaryFile(const string& outPath, std::vector<uint8_t>& buf)
+	{
+		// Open file with Win32 API
+		HANDLE hFile = CreateFileW( outPath.wstring().c_str(), GENERIC_WRITE,	0, NULL, CREATE_ALWAYS,	FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			oserror << "Failed to write output file: " << outPath << endl; // sets data::ErrorOccurred
+			return;
+		}
+
+		// Pre-allocate file size to avoid fragmented allocation
+		LARGE_INTEGER liSize;
+		liSize.QuadPart = buf.size();
+		if (SetFilePointerEx(hFile, liSize, NULL, FILE_BEGIN)) {
+			SetEndOfFile(hFile);
+			SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+		}
+
+		// Perform a single large write operation
+		DWORD written;
+		WriteFile(hFile, buf.data(), static_cast<DWORD>(buf.size()), &written, NULL);
+
+		CloseHandle(hFile);
+	}
+
+--
+
+1>C:\Shavais\Projects\C++\xmc\src\process\Xmo.cpp(28,47): error C2228: left of '.wstring' must have class/struct/union
+
+--
+
+Right now my log streams (oserror, osdebug, and the macros that use them errlog, debug),
+when used by threads, output garbled / interrupted messges.
+I mean it's one thing for sequences of lines to get intermixed, but it's another thing for the characters of individual lines to get intermixed.
+I'm thinking of using a guarded Moody::ConcurrentQueue or something, and creating a LogWriter process that wakes up (from a condition variable) after a line of
+text has been added to the queue and writes it out.
+
+[paste logger.h and logger.cpp]
+
+-- 
+
+it's not missing parenthesis. That's not the cause of our problem.
+
+	fs::path dataDir = GetProgramDataPath();  // <- not missing parenthesis
+
+still getting the error.
+
+--
+
+Here's the original which was compiling just fine:
+
+--
+
+Originally I had posted the .h and the .cpp, but this input form is not letting me use shift-enter to add linespaces, 
+so it looked like one file. I'll post the originals again, but I'll create my post in a separate editor first and then post the whole thing.
+
+// tool/Logger.h - -
+
+#ifndef SV_LOGGER
+#define SV_LOGGER
+
+#define FORCE_DEBUG_OUTPUT        // uncomment this to get debug output in the Release configuration
+
+#include <iosfwd>
+#include <ostream>
+#include <streambuf>
+#include <string>
+
+extern bool StopLogger;
+
+void InitializeLogging();
+
+class Logger : public std::streambuf
+{
+public:
+	Logger(std::ofstream* out, bool isErrorStream = false); 
+	~Logger();
+
+	static const std::string Init();
+		
+private:
+	virtual std::streamsize xsputn(const char_type* s, std::streamsize n) override;
+	virtual int_type overflow(int_type c) override;
+	virtual int sync() override;
+
+private:
+	std::ofstream* output_;
+	bool isError_; 
+};
+
+extern std::ostream osdebug;
+extern std::ostream oserror;
+
+std::string GetLastErrorMessage();
+
+#define debug osdebug << __FILE__ << "(" << __LINE__ << "): "	
+#define errlog oserror << __FILE__ << "(" << __LINE__ << "): "
+
+#endif
+
+// tool/Logger.cpp - -
+
+#include "pch.h"
+#include "Logger.h"
+
+#include <string>
+#include <iostream>
+#include <ostream>
+#include <fstream>
+#include <filesystem>
+#include <shlobj.h>
+
+#include "data/GlobalData.h"
+
+namespace fs = std::filesystem;
+
+using std::ostream;
+using std::string;
+using std::ofstream;
+
+bool StopLogger = false;
+
+static ofstream debug_file;
+static ofstream error_file;
+
+static Logger debug_stream(&debug_file, false);
+static Logger error_stream(&error_file, true);
+
+ostream osdebug(&debug_stream);
+ostream oserror(&error_stream);
+
+bool isDirectoryWritable(const std::wstring& dirPath);
+
+#if defined(_DEBUG) || defined(FORCE_DEBUG_OUTPUT)
+#define DebugOutput 1
+#else
+#define DebugOutput 0
+#endif
+
+std::wstring GetProgramDataPath() 
+{
+	WCHAR path[MAX_PATH];
+	SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path);
+	return std::wstring(path) + L"\\xmc";
+}
+
+void InitializeLogging()
+{
+	string errmsg = Logger::Init();
+	if (!errmsg.empty()) std::cerr << "Could not intialize logging:\n";
+}
+
+
+// LogStream - - - - - - - - - - - -
+
+/// <summary>
+/// Creates the folder %TEMP%/xmc, if it doesn't exist, and creates or truncates the files log.txt and error.txt in that folder
+/// </summary>
+/// <returns>null on success, a string error message on failure</returns>
+const string Logger::Init()
+{
+	std::error_code errorCode;
+
+	fs::path dataDir = GetProgramDataPath();
+	if (!fs::create_directory(dataDir, errorCode) && errorCode.value() != 0)
+	{
+		return "Failed to create or open directory " + dataDir.string() + ":\n" + errorCode.message();
+	}
+
+	fs::path pathname = dataDir / "errors.txt";
+
+	error_file.open(pathname, std::ios::out | std::ios::trunc);
+	if (!error_file.is_open())
+	{
+		return GetLastErrorMessage();
+	}
+
+	if (DebugOutput)
+	{
+		pathname = dataDir / "debug.txt";
+		debug_file.open(pathname, std::ios::out | std::ios::trunc);
+		if (!debug_file.is_open())
+		{
+			return GetLastErrorMessage();
+		}
+	}
+
+	return "";
+}
+
+Logger::Logger(std::ofstream* out, bool isErrorStream) : output_(out), isError_(isErrorStream) {}
+
+Logger::~Logger()
+{
+}
+
+std::streamsize Logger::xsputn(const char_type* s, std::streamsize n)
+{
+	if (StopLogger) return 0;
+
+	if (isError_ && n > 0) data::ErrorOccurred = true;
+
+	std::string input(s, n); 
+
+	OutputDebugStringA(input.c_str());
+	if (output_ && output_->is_open()) output_->write(input.c_str(), n);
+	
+	if (isError_) std::cerr.write(s, n);
+	else std::cout.write(s, n);
+
+	return n;
+}
+
+std::streambuf::int_type Logger::overflow(int_type c)
+{
+	if (c != std::char_traits<char>::eof()) {
+		char_type ch = static_cast<char_type>(c);
+		xsputn(&ch, 1);
+	}
+	return c;
+}
+
+int Logger::sync()
+{
+	if (StopLogger) return 0;
+	if (output_ && output_->is_open()) output_->flush();
+
+	if (isError_) std::cerr.flush();
+	else std::cout.flush();
+
+	return 0;
+}
+
+void removeTrailingCrLf(std::string& str) {
+	if (str.size() >= 2 && str.substr(str.size() - 2) == "\r\n") {
+		str.pop_back(); // Remove '\n'
+		str.pop_back(); // Remove '\r'
+	}
+}
+
+string GetLastErrorMessage()
+{
+	DWORD errorMessageID = GetLastError();
+
+	LPSTR messageBuffer = nullptr;
+	uint64_t size = FormatMessageA(
+		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+		NULL, errorMessageID, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&messageBuffer, 0, NULL
+	);
+	string message(messageBuffer);
+	LocalFree(messageBuffer);
+
+	removeTrailingCrLf(message);
+	return message;
+}
+
+bool isDirectoryWritable(const std::wstring& dirPath) {
+	DWORD desiredAccess = FILE_ADD_FILE | FILE_WRITE_DATA;
+	HANDLE hDir = CreateFileW(
+		dirPath.c_str(),
+		desiredAccess,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_FLAG_BACKUP_SEMANTICS,
+		nullptr
+	);
+
+	if (hDir != INVALID_HANDLE_VALUE) {
+		CloseHandle(hDir);
+		return true;
+	}
+
+	return false;
+}
+
+
+extern "C" void SVGE_Log(const char* msg) {
+	std::cout << "[SVGE Engine]: " << msg << std::endl;
+}
+
+
+yes lets implement the timings of the compile and link steps, here's the current compiler main:
+
+#include "pch.h"
+
+#include <iostream>
+
+#include "experiments.h"
+
+#include "data/CmdLineData.h"
+#include "process/CmdLine.h"
+#include "process/ProjectFile.h"
+#include "tool/Logger.h"
+
+#include "process/Linker.h"
+#include "data/LinkerData.h"
+#include "process/Util.h"
+
+using namespace process;
+using namespace data;
+
+int main(int argc, char* argv[])
+{
+	try
+	{
+		InitializeLogging();
+
+		RemoveFile("hello.obj");		// current test
+		CallCppFunction3();				// produces hello.obj in tests/hello
+
+		ParseCommandLine(argc, argv);	
+		ParseProjectFile();
+		GetPathToLinker();
+		GetLinkerArgs();				// populates data::LinkerArgs
+		
+		RemoveFile("hello.exe");		// test
+		
+		RunShellCmd(PathToLinker + LinkerArgs);
+		osdebug << ShellCmdLog << endl;
+	}
+	catch (const std::runtime_error& e)
+	{
+		std::cerr << "error: " << e.what() << std::endl;	
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << "unhandled exception: " << e.what() << std::endl;
+	}
+	catch (...)
+	{
+		std::cerr << "an unknown exception was thrown" << std::endl;
+	}
+
+	return 0;
+}
+
+
+--
+
+WriteXmoFile needs to include the parse tree.
+We need to alter void LoadPartialXmos() to void LoadXmos(bool loadParseTrees), and have it load the parse trees if loadParseTrees is true. 
+
+== 
+
+I forgot to post this part:
+
+	struct FunctionNodeData
+	{
+		string name;
+		uint32_t totalStackSize;
+		uint64_t exportIdx;
+		bool isLeaf = false;
+	};
+
+	struct StaticData {
+		std::string name;       
+		std::vector<uint8_t> bytes;
+		uint64_t exportIdx;
+	};
+
+	struct ParseTreeNode 
+	{
+		vector<uint16_t> codeBlocks;			
+		vector<ParseTreeNode*> children;
+		vector<string> patchSymbols;
+		FunctionNodeData* funcData;			// null if this isn't a function node
+		std::vector<StaticData> staticData;
+	};
+
+
+--
+
+Am I missing anything from these:
+
+void WriteParseTree(std::vector<uint8_t>& buf, const data::ParseTreeNode* node) {
+		if (!node) {
+			WritePod<uint8_t>(buf, 0);
+			return;
+		}
+		WritePod<uint8_t>(buf, 1);
+
+		// Code Blocks
+		uint32_t cbCount = static_cast<uint32_t>(node->codeBlocks.size());
+		WritePod(buf, cbCount);
+		for (auto cb : node->codeBlocks) WritePod(buf, cb);
+
+		// Patch Symbols
+		uint32_t psCount = static_cast<uint32_t>(node->patchSymbols.size());
+		WritePod(buf, psCount);
+		for (const auto& sym : node->patchSymbols) WriteString(buf, sym);
+
+		// Static Data
+		uint32_t sdCount = static_cast<uint32_t>(node->staticData.size());
+		WritePod(buf, sdCount);
+		for (const auto& sd : node->staticData) {
+			WriteString(buf, sd.name);
+			WritePod(buf, sd.exportIdx);
+			uint32_t byteCount = static_cast<uint32_t>(sd.bytes.size());
+			WritePod(buf, byteCount);
+			buf.insert(buf.end(), sd.bytes.begin(), sd.bytes.end());
+		}
+
+		// Function Metadata
+		if (node->funcData) {
+			WritePod<uint8_t>(buf, 1);
+			WriteString(buf, node->funcData->name);
+			WritePod(buf, node->funcData->totalStackSize);
+			WritePod(buf, node->funcData->exportIdx);
+			WritePod(buf, node->funcData->isLeaf);
+		}
+		else {
+			WritePod<uint8_t>(buf, 0);
+		}
+
+		// Children
+		uint32_t childCount = static_cast<uint32_t>(node->children.size());
+		WritePod(buf, childCount);
+		for (auto* child : node->children) WriteParseTree(buf, child);
+	}
+
+
+	void WriteXmoFile(const data::Xmo* xmo, const fs::path& outPath) {
+		fs::create_directories(outPath.parent_path());
+		std::vector<uint8_t> buf;
+		buf.reserve(4096);
+
+		// Serialize Header/Name
+		WriteString(buf, xmo->name);
+		WritePod(buf, xmo->tempGlobalOffset);
+
+		// Serialize Code Buffer
+		uint32_t codeSize = static_cast<uint32_t>(xmo->codeBuffer.size());
+		WritePod(buf, codeSize);
+		buf.insert(buf.end(), xmo->codeBuffer.begin(), xmo->codeBuffer.end());
+
+		// Serialize Exports
+		uint32_t expCount = static_cast<uint32_t>(xmo->exports.size());
+		WritePod(buf, expCount);
+		for (const auto& exp : xmo->exports) {
+			WriteString(buf, exp.name);
+			WritePod(buf, exp.offset);
+			WritePod(buf, exp.refinementMask);
+			WritePod(buf, exp.scopeId);
+		}
+
+		// Serialize Relocations
+		uint32_t relCount = static_cast<uint32_t>(xmo->relocs.size());
+		WritePod(buf, relCount);
+		for (const auto& rel : xmo->relocs) {
+			WriteString(buf, rel.targetSymbol);
+			WritePod(buf, rel.offset);
+			WritePod(buf, rel.type);
+		}
+
+		// Serialize Scope Tree
+		uint32_t scopeCount = static_cast<uint32_t>(xmo->scopeTree.size());
+		WritePod(buf, scopeCount);
+		for (const auto& scope : xmo->scopeTree) {
+			WritePod(buf, scope.id);
+			WritePod(buf, scope.parentId);
+			WriteString(buf, scope.name);
+		}
+
+		// Write the file
+		FastWriteBinaryFile(outPath.string(), buf);
+	}
+
+	void SaveXmos() {
+		auto start = std::chrono::high_resolution_clock::now();
+
+		std::string intPathStr = std::get<std::string>(data::ProjectFile["IntPath"]);
+		std::string srcRootStr = std::get<std::string>(data::ProjectFile["SourceRoot"]);
+
+		// Use an explicit "xmo" subfolder to isolate our object files
+		fs::path xmoRoot = fs::absolute(intPathStr) / "xmo";
+		fs::path srcRoot = fs::absolute(srcRootStr);
+
+		// Clean up if a full build is requested
+		if (data::CmdLineArgs.Full && fs::exists(xmoRoot)) {
+			fs::remove_all(xmoRoot);
+		}
+
+		BS::thread_pool<> pool;
+
+		for (data::Xmo* xmo : data::Xmos) {
+			if (!xmo->dirty_) continue;
+			pool.detach_task([xmo, xmoRoot, srcRoot]() {
+				// Find the source file info to get the relative subdirectory
+				auto it = data::SourceFiles.find(xmo->name);
+				if (it == data::SourceFiles.end()) return;
+
+				// Mirror the path: src/sub/file.xm -> int/xmo/sub/file.xmo
+				fs::path relPath = fs::relative(it->second.fullPath, srcRoot);
+				fs::path outPath = xmoRoot / relPath;
+				outPath.replace_extension(".xmo");
+
+				WriteXmoFile(xmo, outPath);
+				});
+		}
+		pool.wait();
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> diff = end - start;
+
+		osdebug << sformat("SaveXmos: %zu files saved in %.3f seconds.", data::Xmos.size(), diff.count()) << endl;
+	}
+
+
+--
+
+I did this:
+
+	void DeserializeXmo(data::Xmo* xmo, const std::vector<uint8_t>& buf, bool loadParseTree) {
+		uint64_t offset = 0;
+		xmo->name = ReadString(buf, offset);
+		xmo->tempGlobalOffset = ReadPod<uint32_t>(buf, offset);
+
+.. and I removed that offset variable from the small scope in the caller. It starts at zero and is not used outside of DeserializeXmo.
+
+--
+
+data::MaxThreads = data::ProjectFile["maxthreads"];
+
+I need to convert the string on the right to a uint8_t and if it can't be done stream an error message to oserror
+---
+
+>>>
+The Final "Dumb Compiler" Blueprint:
+Forward Pass (The Mapper):
+Linearize your tree into a global timeline of instruction indices.
+Keep a simple table: Map<{ScopeID, VarID}, LastInstructionIndex>.
+Every time a variable is referenced (even a "reach-in"), update its LastInstructionIndex.
+Backward Pass (The Back-Patcher):
+Start from the end of the timeline.
+For each variable in your table, find the instruction at LastInstructionIndex.
+Set the releases bit for that register in that specific instruction.
+Finalize Pass (The Optimizer):
+Walk the timeline forward.
+Track the currentLiveMask.
+For each block:
+If (block.reserveMask & currentLiveMask) != 0, jump to altTableIndex (and log if it's a spill).
+currentLiveMask |= block.reserveMask.
+currentLiveMask &= ~block.releases.
+Why this is the "Golden Path" for you:
+Speed: It’s strictly where is the number of instructions. No complex graph-traversal.
+Correctness: By definition, a register cannot be reused until the absolute last point the programmer could have possibly looked at it.
+Transparency: Your verbose debug output for spills will perfectly reflect the programmer's code. If they see too many spills, they can see that "reaching in" for a variable 50 lines later is what's keeping the register tied up.
+Since you've already got the COFF writer and the Emitter working, adding this Liveness Registry and a two-pass linear optimizer is the last major "bridge" to having a fully functional, high-performance XCM compiler.
+Do you have a specific Register Allocation strategy in mind for when the parser first picks the "Preferred" blocks, or will it just default to the "standard" argument registers (RCX, RDX, etc.) first?
+<<<
+
+I don't know why we wouldn't use the standard conventions for register allocation, unless you can think of some reason to use a different way. Ok, so, our work flow: 1. I'll write a snippet of xcm code in an .xm file that demonstrates a new feature(s). 2. We'll try and get the compiler compiling that. a. We'll design and implement any other data structures or logic that the parser needs in order to support that feature. b. We'll manually produce the optimized machine code needed for the xcm code snippet. c. We'll work on the blocks and the parser and get the parser producing that code for that snippet while still producing optimized code for previous snippets.
+
+>>>
+That workflow is solid and follows a classic Test-Driven Development (TDD) pattern for compiler engineering. By manually crafting the "perfect" assembly first, you establish a gold standard for the parser to aim for.
+Proposed Feature Roadmap
+Logical Zeroing (xor eax, eax):
+Snippet: u32 x = 0;
+Goal: Ensure the parser picks the Cost 0 xor block instead of a standard mov.
+Arithmetic & Clobbering:
+Snippet: u64 a = 5; a += 10;
+Goal: Implement the add rax, imm block and verify the reserveMask prevents the parser from using rax for something else mid-math.
+Local Variables (The Stack):
+Snippet: u8 a = 1; u8 b = 2; u8 c = a + b;
+Goal: Force a spill by artificially lowering maxThreads or using more variables than registers. Verify the altTableIndex successfully triggers the spill blocks.
+Reach-In Scopes:
+Snippet: { { u8 i = 10; } u8 j = i; }
+Goal: Verify the Back-Patch liveness logic keeps the register for i alive until the parent scope finishes its "reach-in."
+Standard Conventions
+Stick to the Windows x64 Calling Convention as your default. It’s highly documented and makes your .obj files play nice with standard linkers.
+Volatile (Caller-Saved): RAX, RCX, RDX, R8, R9, R10, R11.
+Non-Volatile (Callee-Saved): RBX, RBP, RDI, RSI, R12-R15.
+Ready to start? Paste the contents of your first .xm snippet when you've got it, and we'll map out the necessary XMO structures and Block IDs to get it running.
+Pro-tip: For the manual optimization step (2b), we can use the DUMPBIN output we've been looking at as a template for what the final "clean" code should look like.
+<<<
+
+
+
+==========
+04/11/2026
+
+One thing I'm realizing is that the parser is going to need a global symbol table that has all the symbols that are accessible across xmo's, 
+what their types and refinements are, and what xmo's they're declared in. So we have to load at least the symbol tables of all the xmo's before we start parsing.
+
+>>>
+Something went wrong and the content wasn't generated.
+<<<
+
+[augh. ok, I need a way to start a new context that provides the needed frame of reference for talking about the compiler. Well, let's see if we can address
+just this question about xmo loading.]
+
+--
+I'm writing a compiler for a language. Here are my top level calls right now:
+
+		ParseCommandLine(argc, argv);
+		ParseProjectFile();
+
+		RemoveFile(data::CmdLineArgs.ProjectName + ".obj");		
+
+		auto compileStart = std::chrono::high_resolution_clock::now();
+		
+		LoadSourceFiles();			// Finds and loads modified .xm files, or loads them all if this is a full build
+		
+		// ParseSourceFiles();		// Rebuilds xmo's for modifed files, creates their parse trees including code blocks, does not update xmo code buffers
+		if (data::FullScanRequired || data::CmdLineArgs.Full)
+		{
+			LoadXmos(true);			// Fully loads the xmo's associated with unmodified xm's, including parse trees 
+			//FullScan();			// Scans parse trees of all xmo's, updates the refinement masks of symbols as needed, determines marks changed xmo's as dirty
+		}
+		else
+		{
+			LoadXmos(false);		// Partially loads .xmo's associated with unmodified files; parse trees are not loaded
+		}
+		UpdateXmoCode();			// Generates machine code
+		SaveXmos();					// Persists dirty .xmo
+
+		auto compileEnd = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> compileDist = compileEnd - compileStart;
+
+		auto linkStart = std::chrono::high_resolution_clock::now();
+
+		GetPathToLinker();
+		GetLinkerArgs();				// populates data::LinkerArgs
+		
+		RemoveFile(data::CmdLineArgs.ProjectName + ".exe");
+		
+		RunShellCmd(PathToLinker + LinkerArgs);
+		osdebug << ShellCmdLog << endl;
+
+		auto linkEnd = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> linkDist = linkEnd - linkStart;
+
+		if (!data::ErrorOccurred)
+		{
+			osdebug << ShellCmdLog << endl;
+			osdebug << sformat("Compile time: %.3f s", compileDist.count()) << endl;
+			osdebug << sformat("Link time:    %.3f s", linkDist.count()) << endl;
+			osdebug << sformat("Total time:   %.3f s", (compileDist + linkDist).count()) << endl;
+		}
+
+A single run of the compiler processes one project file and produces one COFF file and runs the platform linker on it. 
+It draws on multiple .xm source files and correlated .xmo files do to that.
+
+One thing I'm realizing now that I'm finally getting down to actually working on the parser (which is where all the brains will be)
+is that the parser is going to need a global symbol table that has all the symbols that are accessible across all the xmo's, 
+what their types and refinements are, and what xmo's they're declared in. 
+So we have to load at least the symbol tables of all the xmo's before we start parsing.
+(The .xmo's also contain saved parse trees to save the parsing step for .xm files that don't need to be recompiled but do need to have 
+some refinements made to their machine code blocks.)
+
+So what I'm wrestling with is this problem of needing the symbols from all the xmo's up front, before I parse, but not wanting to go to disk/ssd 
+again for xmo's that turn out to need their parse trees loaded. The loading is done in threads using a thread pool, and it's done using memory mapped files.
+I don't really want to keep massive number of file handles open. I don't know, but I think I'm leaning toward just loading the entire xmo's
+up front. Symbols, scopes, code blocks, parse trees and all. Just load it all. I'm going to need to code blocks from the .xmo's of all the .xm's 
+that weren't modified anyway. But. I dunno. That seems like that's going to slow down large projects.
+
+Do we do lazy loading? Load the xmo's for the symbols we need as we encounter them? yikes
+
+>>>
+This is the classic "Compiler Architect's Dilemma": balancing a global view of the world with the desire for incremental speed.
+Since you are already using memory-mapped files (mmap) and a thread pool, you are actually in a great position to avoid the "massive file handles" and "slowdown" fears.
+Here is a breakdown of how to handle the symbol vs. parse tree loading efficiently:
+1. The "Thin" Global Index (Recommended)
+Don't load everything, but don't be truly "lazy" (on-demand) either, as that kills your parallelization. Instead, use a two-phase header approach within your .xmo files:
+Phase 1 (The "Export" Table): Map the .xmo and read only the symbol table/metadata. This should be a contiguous block at the start of the file. Store these symbols in your global table with a pointer/ID back to the originating .xmo object.
+Phase 2 (The "Body"): Keep the file mapped, but don't touch the memory pages for the parse trees or code blocks yet. Because it’s an mmap, the OS won't actually pull those pages from the SSD into RAM until you access the memory addresses.
+2. Why Memory Mapping is your Secret Weapon
+If you map the whole .xmo but only read the first 4KB (the symbols), the rest of the file stays "virtual."
+File Handles: Modern OSs (Windows/Linux) easily handle thousands of open handles. Unless your project has 10,000+ source files, this isn't a real bottleneck.
+Lazy Loading for free: By using mmap, the Operating System is your lazy loader. You don't need to write if(!loaded) load(); logic. You just access the ParseTree* pointer, and the OS triggers a page fault to bring that specific chunk of the file into RAM.
+3. Refined Execution Flow
+Based on your current code, I’d tweak the sequence to this:
+Parallel Map & Index: Run through all .xmo files in the thread pool. Map them and register their symbols into the global table.
+The "Brains" (Analysis): Start your parser. When the parser sees ExternalType, it looks it up in the global table.
+On-Demand Tree Access: If the parser decides it needs to inspect the implementation (the parse tree) of an external symbol for refinement, it just follows the pointer.
+4. When to "Load All" vs. "Stay Thin"
+If your language allows transitive refinements (changing code in File A causes a ripple effect that requires re-checking the parse tree of File B), you will eventually touch those pages anyway.
+My suggestion: Don't fight the "load all" instinct, but optimize the layout. Ensure your .xmo format puts the "Global Symbols" at the front and "Private Parse Trees/Code" at the back. This ensures that even if you map everything, you only burn IOPS and cache on the data you actually use.
+What is the average file count and size you're targeting for a "large" project? Knowing that helps determine if "all-in-RAM" is a dream or a nightmare.
+<<<
+
+It would be nice if this compiler would be capable of doing a full build of a translation of the linux kernal.. but I'm not sure if all the source files for the linux kernal could be loaded into memory at once, and I don't think I want to be loading source files piecemeal..
+
+>>>
+Compiling a codebase the size of the Linux kernel in one shot is entirely feasible on modern hardware, provided your data structures are efficient.
+1. The Scale of the Challenge
+As of early 2025, the Linux kernel source tree consists of approximately 40 million lines of code spread across roughly 78,000 files. 
+commandlinux.com
+commandlinux.com
+ +1
+Total Source Size: The unpacked source is roughly 600MB to 1GB.
+Memory Footprint: Even if your compiler's internal representation (ASTs, symbol tables, etc.) is 10x the size of the raw text, you're looking at 10GB of RAM. Most developer workstations today have 32GB to 64GB, which is more than enough. 
+Reddit
+Reddit
+ +1
+2. Solving the "File Handle" Fear
+You mentioned concerns about keeping a massive number of file handles open. Here is why that isn't a blocker:
+OS Limits: Windows 10/11 handles approximately 16.7 million handles per process. Linux defaults vary but can be easily tuned to 1 million+.
+Handle Lifecycle: You don't need to keep them all open simultaneously. You can Map -> Close Handle -> Use Memory. On Windows, CreateFileMapping keeps the mapping alive even after the file handle is closed. On Linux, the mapping remains valid after close(fd) until you munmap.
+The "Mapped" Advantage: By closing the handle immediately after mapping, your process only holds the virtual memory address space, not a "file handle" in the OS table. 
+Unix & Linux Stack Exchange
+Unix & Linux Stack Exchange
+ +2
+3. Strategic Recommendations for "Kernel-Scale" Builds
+To handle 78,000 files without "loading them piecemeal" or killing performance:
+Grouped Symbol Tables: If your .xmo files are small, the overhead of 80,000 separate mmap calls might be more than the IO itself. Consider a "Build Database" or a unified symbol index file that mirrors the project file.
+The "Bloat" is usually the Linker: In the Linux kernel, the linker is often the bottleneck and the primary RAM consumer because it has to resolve millions of symbols across the entire binary. Since your compiler produces one COFF and then calls a platform linker, ensure your COFF generation is as "thin" as possible.
+Parallel Mapping: Your thread pool should map files in batches. Mapping is a metadata-heavy operation; doing it in parallel on a fast NVMe drive will saturate your IOPS long before it hits a CPU bottleneck. 
+Unix & Linux Stack Exchange
+Unix & Linux Stack Exchange
+How many total symbols do you expect a "fully refined" global table to hold for a project of this scale? Understanding the density of your symbols vs. code will help fine-tune the "thin index" approach.
+<<<
+
+I don't know, do we know how many symbols the linux kernal source code has?
+
+>>>
+For a project the size of the Linux kernel, you're looking at millions of total symbols, but only a subset of those are "global" in the way your compiler's global symbol table would care about. 
+The Symbol Breakdown
+Based on recent kernel metrics (v6.x series):
+Total Source Lines: ~40 million lines of code.
+Active Symbols (kallsyms): A typical running kernel has roughly 100,000 to 300,000 symbols in its active table (/proc/kallsyms).
+Static vs. Global: In C, most symbols are static (local to the file). However, since you are building a compiler that needs to resolve cross-file dependencies, you care about External and Exported symbols.
+Estimated Global Table Size: For a full build, your global table will likely need to track between 500,000 and 1,000,000 entries to account for every globally visible function, variable, and type across all 70,000+ files. 
+Linux.com
+Linux.com
+ +3
+Memory Math for Your Compiler
+If you have 1 million symbols:
+Average Symbol Name: ~20-30 bytes.
+Metadata (Type, Refinement, XMO ID): ~32-64 bytes.
+Total RAM for Global Table: Roughly 100MB - 150MB.
+This is remarkably small. Even if your internal representation is heavy, the "Global Table" itself won't be what slows you down—it's the inter-dependency resolution (the "brains" of the parser). 
+Why the "Thin Index" is the Winner
+Given these numbers, loading just the symbol tables from all .xmo files is trivial:
+Parallel Scan: Your threads map the .xmo files and pull that ~150MB of symbol data into a central hash map.
+The RAM Win: You are only "touching" a tiny fraction of each file's pages.
+The SSD Win: Because you aren't reading the massive parse trees yet, you aren't saturating your bus with data you might not need.
+Are you planning to use a single flat hash map for these symbols, or a tiered system (e.g., by namespace or module)? Flat is usually fastest for a compiler, but it depends on how your language handles name collisions.
+Proactive Follow-up: Since you're using memory-mapped files, would you like to see a C++ snippet for a lock-free parallel symbol registration pattern to populate that global table without a bottleneck?
+<<<
+
+sure
+
+>>>
+For a project as large as the Linux kernel, you will likely manage between 500,000 and 1,000,000 global symbols. Populating this table in parallel is the way to go, but a single global mutex will become a massive bottleneck as your thread count increases. 
+Maíra Canal
+Maíra Canal
+ +2
+The most efficient pattern for a compiler's "Discovery Phase" is a Sharded Concurrent Hash Map. This splits the symbol table into independent buckets (shards), each with its own small lock, allowing multiple threads to insert symbols simultaneously without waiting for each other unless they hit the exact same shard. 
+GitHub
+GitHub
+ +1
+Parallel Symbol Registration Pattern
+This approach uses sharding to minimize contention while threads parse their memory-mapped .xmo files.
+
+#include <vector>
+#include <string>
+#include <shared_mutex>
+#include <unordered_map>
+#include <thread>
+
+// Represents a symbol's metadata found in an .xmo
+struct SymbolEntry {
+    uint32_t xmoId;
+    uint32_t typeInfo;
+    void* parseTreeRef; // Pointer into the mmap'd region
+};
+
+class GlobalSymbolTable {
+    static constexpr size_t SHARD_COUNT = 256; // High number to reduce collisions
+    
+    struct Shard {
+        std::shared_mutex mutex;
+        std::unordered_map<std::string, SymbolEntry> symbols;
+    };
+    
+    std::vector<Shard> shards{SHARD_COUNT};
+
+    // Simple hash to determine which shard a symbol name belongs to
+    size_t getShardIndex(const std::string& name) const {
+        return std::hash<std::string>{}(name) % SHARD_COUNT;
+    }
+
+public:
+    // Called by worker threads as they scan .xmo headers
+    void RegisterSymbol(std::string name, SymbolEntry entry) {
+        auto& shard = shards[getShardIndex(name)];
+        
+        // Use a unique_lock for writing
+        std::unique_lock lock(shard.mutex);
+        shard.symbols[std::move(name)] = entry;
+    }
+
+    // Called by the parser during 'The Brains' phase
+    bool TryLookup(const std::string& name, SymbolEntry& outEntry) {
+        auto& shard = shards[getShardIndex(name)];
+        
+        // Use shared_lock for parallel reading
+        std::shared_lock lock(shard.mutex);
+        auto it = shard.symbols.find(name);
+        if (it != shard.symbols.end()) {
+            outEntry = it->second;
+            return true;
+        }
+        return false;
+    }
+};
+
+Why this works for your compiler:
+Massive Parallelism: With 256 shards, 32+ threads can register symbols from different files simultaneously with almost zero chance of blocking.
+Shared Reading: During the parsing phase, multiple threads can look up the same common types (like size_t or void*) simultaneously because std::shared_lock allows concurrent readers.
+Memory Mapped Integration: The parseTreeRef can be a direct pointer into your memory-mapped .xmo. Because the OS handles the page faults, your registration stays "thin"—you aren't copying the whole tree, just its address. 
+GitHub
+GitHub
+ +4
+For the next step, would you like to refine how the .xmo file format is laid out to ensure the symbol headers are contiguous for faster mapping? Physical data locality on the SSD will be your next biggest win after fixing the locks.
+<<<
+
+When does Windows release a memory mapped file?
+
+>>>
+Windows releases a memory-mapped file only when all of the following are true: 
+All views are unmapped (via UnmapViewOfFile).
+All handles to the mapping object are closed (via CloseHandle).
+All handles to the underlying file on disk are closed (via CloseHandle). 
+Microsoft Learn
+Microsoft Learn
+ +2
+The Internal Reference System
+Windows uses a "reference counting" model. Even if you explicitly call CloseHandle on your file mapping, the OS will not actually release the file if a view is still active in your process. 
+ftp.zx.net.nz
+ftp.zx.net.nz
+ +1
+Mapping Views Hold References: Every time you call MapViewOfFile, the system creates an internal reference to the file mapping object.
+Safe Closing Order: It is perfectly safe (and common) to call CloseHandle on the file and the mapping object immediately after creating your view. The system will keep everything alive internally until you finally call UnmapViewOfFile.
+Cleanup on Exit: If your compiler crashes or exits, the Windows kernel automatically closes all remaining handles and unmaps all views on your behalf, ensuring the file is eventually released. 
+Microsoft Dev Blogs
+Microsoft Dev Blogs
+ +4
+Physical RAM vs. Virtual Release
+There is a difference between releasing the file (allowing other programs to delete it) and releasing the physical RAM: 
+Standby List: Even after you unmap a file, Windows may keep the data in "Standby" RAM. This memory is technically "available" for other apps, but if your compiler needs to re-read that same .xmo file again, the OS can instantly re-assign it without going back to the SSD.
+Dirty Pages: If you have modified the memory, Windows won't fully release the page until it has been successfully flushed to the disk. 
+Nextway Software
+Nextway Software
+ +4
+Would you like to know how to structure your .xmo files so you can unmap the "Symbol" section while keeping the "Parse Tree" section active to save virtual address space?
+<<<
+
+Here's how it is currently defined:
+
+// data/XmoData.h
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <memory>
+#include <vector>
+
+#include "CodeBlock.h"
+#include "ParserData.h"
+
+namespace data
+{
+
+	struct XmoScope {
+		uint32_t id;
+		uint32_t parentId;   // 0 for Global
+		std::string name;    // Optional: for debugging or namespaces
+	};
+
+	struct XmoImport { // Renamed from Relocation for clarity
+		std::string targetSymbol;
+		uint32_t expectedMask;   // <--- What we thought it was when we compiled
+	};
+
+	struct XmoExport {
+		std::string name;
+		uint32_t offset;
+		uint32_t refinementMask;
+		uint32_t scopeId;
+	};
+
+	struct XmoRelocation {
+		std::string targetSymbol; // Name of what we are calling
+		uint32_t offset;          // Offset in this Xmo's code to patch
+		uint16_t type;            // e.g., IMAGE_REL_AMD64_REL32
+	};
+
+
+	class Xmo {
+	public:
+		std::string name;
+		std::vector<uint8_t> codeBuffer;
+		std::vector<XmoExport> exports;
+		std::vector<XmoRelocation> relocs;
+		std::vector<XmoScope> scopeTree;
+		ParseTreeNode* parseTree;
+		uint32_t tempGlobalOffset = 0;
+		bool dirty_ = false;
+	};
+
+	inline vector<Xmo*> Xmos;
+
+}
+
+Here's how we're writing them out:
+
+	void WriteXmoFile(const data::Xmo* xmo, const fs::path& outPath) {
+		fs::create_directories(outPath.parent_path());
+		std::vector<uint8_t> buf;
+		buf.reserve(8192); // Increased reserve as parse trees can be large
+
+		// [Standard Fields - same as your code]
+		WriteString(buf, xmo->name);
+		WritePod(buf, xmo->tempGlobalOffset);
+
+		uint32_t codeSize = static_cast<uint32_t>(xmo->codeBuffer.size());
+		WritePod(buf, codeSize);
+		buf.insert(buf.end(), xmo->codeBuffer.begin(), xmo->codeBuffer.end());
+
+		uint32_t expCount = static_cast<uint32_t>(xmo->exports.size());
+		WritePod(buf, expCount);
+		for (const auto& exp : xmo->exports) {
+			WriteString(buf, exp.name);
+			WritePod(buf, exp.offset);
+			WritePod(buf, exp.refinementMask);
+			WritePod(buf, exp.scopeId);
+		}
+
+		uint32_t relCount = static_cast<uint32_t>(xmo->relocs.size());
+		WritePod(buf, relCount);
+		for (const auto& rel : xmo->relocs) {
+			WriteString(buf, rel.targetSymbol);
+			WritePod(buf, rel.offset);
+			WritePod(buf, rel.type);
+		}
+
+		uint32_t scopeCount = static_cast<uint32_t>(xmo->scopeTree.size());
+		WritePod(buf, scopeCount);
+		for (const auto& scope : xmo->scopeTree) {
+			WritePod(buf, scope.id);
+			WritePod(buf, scope.parentId);
+			WriteString(buf, scope.name);
+		}
+
+		WriteParseTree(buf, xmo->parseTree);
+		FastWriteBinaryFile(outPath, buf);
+	}
+
+	void SaveXmos() {
+		auto start = std::chrono::high_resolution_clock::now();
+
+		std::string intPathStr = std::get<std::string>(data::ProjectFile["IntPath"]);
+		std::string srcRootStr = std::get<std::string>(data::ProjectFile["SourceRoot"]);
+
+		// Use an explicit "xmo" subfolder to isolate our object files
+		fs::path xmoRoot = fs::absolute(intPathStr) / "xmo";
+		fs::path srcRoot = fs::absolute(srcRootStr);
+
+		// Clean up if a full build is requested
+		if (data::CmdLineArgs.Full && fs::exists(xmoRoot)) {
+			fs::remove_all(xmoRoot);
+		}
+
+		BS::thread_pool<> pool;
+
+		for (data::Xmo* xmo : data::Xmos) {
+			if (!xmo->dirty_) continue;
+			pool.detach_task([xmo, xmoRoot, srcRoot]() {
+				// Find the source file info to get the relative subdirectory
+				auto it = data::SourceFiles.find(xmo->name);
+				if (it == data::SourceFiles.end()) return;
+
+				// Mirror the path: src/sub/file.xm -> int/xmo/sub/file.xmo
+				fs::path relPath = fs::relative(it->second.fullPath, srcRoot);
+				fs::path outPath = xmoRoot / relPath;
+				outPath.replace_extension(".xmo");
+
+				WriteXmoFile(xmo, outPath);
+				});
+		}
+		pool.wait();
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> diff = end - start;
+
+		osdebug << sformat("SaveXmos: %zu files saved in %.3f seconds.", data::Xmos.size(), diff.count()) << endl;
+	}
+
+It looks like we're not even writing out the symbols yet. Well, we haven't started on the parser, our initial
+tests centered around faked parse trees getting processed for code emission and a COFF file being written, linked and tested.
+
+---
+
+oh, FullScanRequired, in the existing flow, just means we need to read all the parse trees. It doesn't mean we need to rebuild all the xmo's. 
+So for the moment I've taken that part out of that condition. But we're changing the way all this works anyway.
+
+Here's the way the xmos are currently read:
+
+	data::ParseTreeNode* ReadParseTree(const std::vector<uint8_t>& buf, uint64_t& offset) {
+		if (ReadPod<uint8_t>(buf, offset) == 0) return nullptr;
+
+		auto* node = new data::ParseTreeNode();
+
+		// 1. Code Blocks
+		uint32_t cbCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < cbCount; ++i) {
+			node->codeBlocks.push_back(ReadPod<uint16_t>(buf, offset));
+		}
+
+		// 2. Patch Symbols
+		uint32_t psCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < psCount; ++i) {
+			node->patchSymbols.push_back(ReadString(buf, offset));
+		}
+
+		// 3. Static Data
+		uint32_t sdCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < sdCount; ++i) {
+			data::StaticData sd;
+			sd.name = ReadString(buf, offset);
+			sd.exportIdx = ReadPod<uint64_t>(buf, offset);
+			uint32_t byteCount = ReadPod<uint32_t>(buf, offset);
+			sd.bytes.resize(byteCount);
+			std::memcpy(sd.bytes.data(), &buf[offset], byteCount);
+			offset += byteCount;
+			node->staticData.push_back(sd);
+		}
+
+		// 4. Function Metadata
+		if (ReadPod<uint8_t>(buf, offset) == 1) {
+			node->funcData = new data::FunctionNodeData();
+			node->funcData->name = ReadString(buf, offset);
+			node->funcData->totalStackSize = ReadPod<uint32_t>(buf, offset);
+			node->funcData->exportIdx = ReadPod<uint64_t>(buf, offset);
+			node->funcData->isLeaf = ReadPod<bool>(buf, offset);
+		}
+
+		// 5. Children
+		uint32_t childCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < childCount; ++i) {
+			node->children.push_back(ReadParseTree(buf, offset));
+		}
+
+		return node;
+	}
+
+
+	std::mutex xmoListMutex;
+
+	void DeserializeXmo(data::Xmo* xmo, const std::vector<uint8_t>& buf, bool loadParseTree) {
+		uint64_t offset = 0;
+		xmo->name = ReadString(buf, offset);
+		xmo->tempGlobalOffset = ReadPod<uint32_t>(buf, offset);
+
+		// Code Buffer
+		uint32_t codeSize = ReadPod<uint32_t>(buf, offset);
+		xmo->codeBuffer.resize(codeSize);
+		std::memcpy(xmo->codeBuffer.data(), &buf[offset], codeSize);
+		offset += codeSize;
+
+		// Exports
+		uint32_t expCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < expCount; ++i) {
+			data::XmoExport exp;
+			exp.name = ReadString(buf, offset);
+			exp.offset = ReadPod<uint32_t>(buf, offset);
+			exp.refinementMask = ReadPod<uint32_t>(buf, offset);
+			exp.scopeId = ReadPod<uint32_t>(buf, offset);
+			xmo->exports.push_back(exp);
+		}
+
+		// Relocations
+		uint32_t relCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < relCount; ++i) {
+			data::XmoRelocation rel;
+			rel.targetSymbol = ReadString(buf, offset);
+			rel.offset = ReadPod<uint32_t>(buf, offset);
+			rel.type = ReadPod<uint16_t>(buf, offset);
+			xmo->relocs.push_back(rel);
+		}
+
+		// Scope Tree
+		uint32_t scopeCount = ReadPod<uint32_t>(buf, offset);
+		for (uint32_t i = 0; i < scopeCount; ++i) {
+			data::XmoScope scope;
+			scope.id = ReadPod<uint32_t>(buf, offset);
+			scope.parentId = ReadPod<uint32_t>(buf, offset);
+			scope.name = ReadString(buf, offset);
+			xmo->scopeTree.push_back(scope);
+		}
+
+		// Parse Tree (prefixed with size for fast skipping)
+		uint32_t treeDataSize = ReadPod<uint32_t>(buf, offset);
+		if (loadParseTree) {
+			xmo->parseTree = ReadParseTree(buf, offset);
+		}
+		else {
+			xmo->parseTree = nullptr;
+		}
+	}
+
+	void LoadXmos(bool loadParseTrees) {
+		auto start = std::chrono::high_resolution_clock::now();
+
+		std::string intPathStr = std::get<std::string>(data::ProjectFile["IntPath"]);
+		std::string srcRootStr = std::get<std::string>(data::ProjectFile["SourceRoot"]);
+		fs::path xmoRoot = fs::absolute(intPathStr) / "xmo";
+		fs::path srcRoot = fs::absolute(srcRootStr);
+
+		BS::thread_pool<> pool;
+		std::unordered_set<std::string> modified(data::ModifiedSources.begin(), data::ModifiedSources.end());
+
+		for (auto const& [name, srcInfo] : data::SourceFiles) {
+			// Only load if it WASN'T modified in this compile session
+			if (modified.find(name) == modified.end()) {
+				pool.detach_task([&, name, srcInfo, loadParseTrees, xmoRoot, srcRoot]() {
+					fs::path relPath = fs::relative(srcInfo.fullPath, srcRoot);
+					fs::path xmoPath = xmoRoot / relPath;
+					xmoPath.replace_extension(".xmo");
+
+					if (fs::exists(xmoPath)) {
+						std::vector<uint8_t> buf = FastReadBinaryFile(xmoPath);
+						if (!buf.empty()) {
+							data::Xmo* xmo = new data::Xmo();
+
+							DeserializeXmo(xmo, buf, loadParseTrees);
+
+							std::lock_guard<std::mutex> lock(xmoListMutex);
+							data::Xmos.push_back(xmo);
+						}
+					}
+					});
+			}
+		}
+		pool.wait();
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> diff = end - start;
+
+		osdebug << sformat("LoadXmos: %zu unmodified XMOs loaded in %.3f seconds.",
+			data::Xmos.size(), diff.count()) << endl;
+	}
+
+
+Should we update these functions? Or create different ones?
+
+>>>
+2. The Refined Flow
+I recommend splitting your loading into two distinct "Mindsets":
+Global Discovery (Fast): LoadXmos(false) runs first. It maps everything, reads only symbols, and populates your global table. It finishes in milliseconds because it never touches the parse tree pages.
+The Brains (On-Demand): Later, if your parser realizes it needs to "Refine" a specific file, you call a function to load that specific parseTree.
+3. Key Changes for Kernel-Scale Efficiency
+Stop using new for every node: In ReadParseTree, your current code calls new data::ParseTreeNode() for every single node. For 40 million lines of code, this will fragment your heap and slow you down. Consider a Block Allocator (Arena) where you allocate 1MB chunks and carve nodes out of them.
+The "Mapped" Read: Notice I changed the arguments to const uint8_t* base. This is the pointer from your mmap / MapViewOfFile.
+Pointer Fixups: Since ReadParseTree creates new nodes on the heap anyway, your current "serialization" isn't actually taking advantage of the mmap for the tree itself (it's just copying data from the file to the heap).
+How attached are you to the current ReadParseTree heap-allocation logic? If we change the tree to be "Index-Based" inside a contiguous buffer, you could map the tree and use it without any allocations or reading, which would make "Full Scans" nearly instantaneous.
+Proactive Follow-up: Should I provide the helper functions for mapping a file on Windows so you can replace FastReadBinaryFile with a zero-copy pointer?
+<<<
+
+I would like to see the code for the Read* helpers.
+Let's revamp ReadParseTree, and if needed, the parse tree related data structures.
+
+--
+
+Can I get the code for ReadParseTreeFromPtr
+
+--
+
+I have the code for ReadStringFromPtr and ReadPodFromPtr, but your SaveXmos code is looking for this ReadParseTreeFromPtr function..
+
+--
+
+Here's what I have for FastReadBinaryFile:
+
+	std::vector<uint8_t> FastReadBinaryFile(const fs::path& path) {
+		// 1. Open the file handle with sequential scan hint for SSD optimization
+		HANDLE hFile = CreateFileW(
+			path.wstring().c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ,
+			NULL,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+			NULL
+		);
+
+		if (hFile == INVALID_HANDLE_VALUE) {
+			// Only log if the file actually exists but failed to open
+			if (fs::exists(path)) {
+				oserror << sformat("Failed to open binary file: %s", path.string().c_str()) << endl;
+			}
+			return {};
+		}
+
+		// 2. Get file size for mapping
+		LARGE_INTEGER size;
+		if (!GetFileSizeEx(hFile, &size) || size.QuadPart == 0) {
+			CloseHandle(hFile);
+			return {};
+		}
+
+		// 3. Create a file mapping object
+		HANDLE hMapping = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+		if (!hMapping) {
+			oserror << sformat("Failed to create file mapping: %s", path.string().c_str()) << endl;
+			CloseHandle(hFile);
+			return {};
+		}
+
+		// 4. Map the view into memory
+		void* pData = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+		std::vector<uint8_t> content;
+
+		if (pData) {
+			// Copy the mapped data into our vector
+			// This is typically faster than ReadFile because it bypasses extra system buffering
+			content.assign(
+				static_cast<const uint8_t*>(pData),
+				static_cast<const uint8_t*>(pData) + size.QuadPart
+			);
+			UnmapViewOfFile(pData);
+		}
+
+		// 5. Cleanup handles
+		CloseHandle(hMapping);
+		CloseHandle(hFile);
+
+		return content;
+	}
+
+
+Maybe we should do something different, though, since we don't actually want to read the whole file at once?
+
+--
+
+I don't think we t need the IsXmoUpToDate helper, the LoadModifiedSources function already creates a unordered_map<string, FileInfo> for all the .xm files and .xmo files.
+FileInfo has the last modified timestamps.
+
+In xmc, file names can optionally act as the initial segment of a namespace path. 
+
+If the same symbol is present in the same scope twice, the 2nd symbol creates a shadow scope in which everything after declaration sees the second one, not
+the first one, until the end of the shadow scope (which is the same as the end of its parent scope). 
+The first symbol one may only be referenced from the shadow scope in the initializer for the 2nd one.
+
+
+--
+
+Let's use these ideas but integrate them with our symbol needs
+
+struct SymbolKey {
+    char* name;         // pointer into our arena
+    uint32_t scope_id;
+
+    bool operator==(const SymbolKey& other) const {
+        return scope_id == other.scope_id && name == other.name;
+    }
+};
+
+struct SymbolKeyHasher {
+    size_t operator()(const SymbolKey& k) const {
+        // mixing constants
+        static constexpr uint64_t M = 0xc6a4a7935bd1e995;
+        static constexpr int R = 47;
+
+        uint64_t h = 0x84222325 ^ (12); // Seed mixed with key size (8+4 bytes)
+
+        // Mix the Pointer (8 bytes)
+        uint64_t k1 = reinterpret_cast<uintptr_t>(k.name);
+        k1 *= M; k1 ^= k1 >> R; k1 *= M;
+        h ^= k1; h *= M;
+
+        // Mix the Scope ID (4 bytes)
+        uint64_t k2 = static_cast<uint64_t>(k.scope_id);
+        h ^= k2; h *= M;
+
+        // spread entropy across all bits (for a 0xFF mask)
+        h ^= h >> R; h *= M; h ^= h >> R;
+
+        return static_cast<size_t>(h);
+    }
+};
+
+// symbol look up / instantiation 
+Symbol& get_or_declare(const char* interned_name, uint32_t scope_id) {
+    SymbolKey key = {interned_name, scope_id}; 
+    size_t h = SymbolKeyHasher{}(key); 
+    size_t idx = h & 0xFF; 
+    std::lock_guard<std::mutex> lock(shards[idx].mtx);   
+    return shards[idx].map[key];
+}
+
+namespace std {
+    template <>
+    struct hash<SymbolKey> {
+        size_t operator()(const SymbolKey& k) const {
+            // Use your FNV-1a here or a simple combination
+            // Note: Use the pointer for speed if strings are interned
+            size_t h1 = std::hash<const char*>{}(k.name.data());
+            size_t h2 = std::hash<uint32_t>{}(k.scope_id);
+            return h1 ^ (h2 << 1); // Simple mix
+        }
+    };
+}
+
+// symbol registry
+std::unordered_map<SymbolKey, Symbol, SymbolKeyHasher> symbol_table;
+
+
+
+==========
+04/12/2026
+
+For a compiler that is compiling the linux kernal, would it be faster to use a symbol key hasher like this:
+
+struct SymbolKeyHasher {
+    size_t operator()(const SymbolKey& k) const {
+        // mixing constants
+        static constexpr uint64_t M = 0xc6a4a7935bd1e995;
+        static constexpr int R = 47;
+
+        uint64_t h = 0x84222325 ^ (12); // Seed mixed with key size (8+4 bytes)
+
+        // Mix the Pointer (8 bytes)
+        uint64_t k1 = reinterpret_cast<uintptr_t>(k.name);
+        k1 *= M; k1 ^= k1 >> R; k1 *= M;
+        h ^= k1; h *= M;
+
+        // Mix the Scope ID (4 bytes)
+        uint64_t k2 = static_cast<uint64_t>(k.scope_id);
+        h ^= k2; h *= M;
+
+        // spread entropy across all bits (for a 0xFF mask)
+        h ^= h >> R; h *= M; h ^= h >> R;
+
+        return static_cast<size_t>(h);
+    }
+};
+
+And then use a struct for the symbol key, or to use a hasher like this:
+
+	template <>
+	struct hash<data::SymbolKey> {
+		size_t operator()(const data::SymbolKey& k) const {
+			// Use your FNV-1a here or a simple combination
+			// Note: Use the pointer for speed if strings are interned
+			size_t h1 = std::hash<const char*>{}(k.name);
+			size_t h2 = std::hash<uint32_t>{}(k.scope_id);
+			return h1 ^ (h2 << 1); // Simple mix
+		}
+	};
+
+
+and use a std::pair for the symbol key?
+
+--
+
+	struct SymbolEntry
+	{
+		const char* name;
+		Symbol* symbol;
+	};
+
+	struct SymbolShard
+	{
+		mutex shared_mutex;
+		std::unordered_map<SymbolKey, SymbolEntry, SymbolKeyHasher> table;
+	};
+
+	inline SymbolShard SymbolTable[256];
+
+
+	struct XmoArena {
+		vector<unique_ptr<uint8_t[]>> chunks;
+		size_t offset = 0;
+		static constexpr size_t CHUNK_SIZE = 1024 * 1024; 
+
+		void* Allocate(size_t size) {
+			if (chunks.empty() || offset + size > CHUNK_SIZE) {
+				chunks.push_back(make_unique<uint8_t[]>(CHUNK_SIZE));
+				offset = 0;
+			}
+			void* ptr = &chunks.back()[offset];
+			offset += (size + 7) & ~7; // Align to 8 bytes
+			return ptr;
+		}
+	};
+
+Is this XmoArena appropriate for storing Symbols in?
+
+---
+
+I have already changed the type of Symbol::name to const char*. Anyway, our arenas will have lifetimes >= lifetimes of the things they contain.
+
+I guess we do need a thread safe allocate.
+
+--
+A little dilema here..
+
+		for (uint32_t i = 0; i < expCount; ++i) {
+			data::XmoExport exp;
+			exp.name = ReadStringFromPtr(base, offset);
+			exp.offset = ReadPodFromPtr<uint32_t>(base, offset);
+			exp.refinementMask = ReadPodFromPtr<uint32_t>(base, offset);
+			exp.scopeId = ReadPodFromPtr<uint32_t>(base, offset);
+			xmo->exports.push_back(exp);
+				
+			auto* symbol = GetOrCreateSymbol({ exp.name.c_str(), exp.scopeId });
+
+			//symbol->name = exp.name.c_str();
+			//exp->scopeId, xmo, exp.offset, exp.refinementMask
+			//);
+		}
+
+
+This is reading a symbol in from a .xmo file. If the symbol has already been created, the name has already been allocated.
+But we don't know if has been or not.
+
+--
+
+I just realized we may have to do some more refactoring.. 
+
+In xcm, any symbol in a namespace is accessible from anywhere in the program.
+So to find a symbol in some namespace path in some file from some other namespace path in some other file,
+we have to be able to look it up by its name without knowing its namespace path. 
+That is, without knowing its scope_id.
+
+Maybe...
+    SymbolKey needs to be only the symbol name.
+    SymbolEntry needs to have a vector of scope_ids in which that name is found.
+    Symbol needs to store a vector/stack of scope_ids which is their namespace path, which starts with scope id for the file they're in.
+    The scope ids of files need to not be the same as the scope ids of other files in the project, and not be the same as other scope ids in that file.
