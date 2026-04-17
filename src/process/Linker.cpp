@@ -152,35 +152,37 @@ namespace process
 		using namespace process;
 		using namespace data;
 
-		auto AppendFromList = [&](std::string& out, const std::string& key, const std::string& prefix = "", const std::string& defaultExt = "") {
-			std::string raw = GetString(key, "");
-			if (raw.empty()) return;
+		auto AppendFromList = 
+			[&](std::string& out, const std::string& key, const std::string& prefix = "", const std::string& defaultExt = "") {
+				std::string raw = GetString(key, "");
+				if (raw.empty()) return;
 
-			TextParser p(raw);
-			p.Skip(" \t\r\n["); // Skip start of list
+				TextParser p(raw);
+				p.Skip(" \t\r\n["); // Skip start of list
 
-			while (!p.Empty() && !p.CheckFor(']')) {
-				auto [item, delim] = p.ReadUntil(",]", false);
+				while (!p.Empty() && !p.CheckFor(']')) {
+					auto [item, delim] = p.ReadUntil(",]", false);
 
-				// Clean up whitespace/newlines/quotes from the path
-				string_view trimmed = lrtrim(item, " \t\r\n\"");
+					// Clean up whitespace/newlines/quotes from the path
+					string_view trimmed = lrtrim(item, " \t\r\n\"");
 
-				if (!trimmed.empty()) {
-					std::string entry(trimmed);
+					if (!trimmed.empty()) {
+						std::string entry(trimmed);
 
-					// Only add extension if one isn't already present
-					if (!defaultExt.empty() && entry.find('.') == std::string::npos) {
-						entry += defaultExt;
+						// Only add extension if one isn't already present
+						if (!defaultExt.empty() && entry.find('.') == std::string::npos) {
+							entry += defaultExt;
+						}
+
+						out += " " + prefix + "\"" + entry + "\"";
 					}
 
-					out += " " + prefix + "\"" + entry + "\"";
+					if (delim == ',') p.Skip(",");
+					p.Skip(" \t\r\n"); // Crucial for multi-line LibPaths
+
 				}
-
-				if (delim == ',') p.Skip(",");
-				p.Skip(" \t\r\n"); // Crucial for multi-line LibPaths
 			}
-			};
-
+		;
 		// Build the string
 		std::string args = " /NOLOGO";
 

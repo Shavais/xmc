@@ -145,7 +145,18 @@ User~mrrmrs u           - u is ifrmrs, actually, but any attempt to morph it hig
 
 Note that if an object is materialized (not a pointer), the raw/arc bit has no bearing. Raw/Arc is only relevant for pointers.
 
-b. Variants
+b. Subtypes
+
+Some built in containers have subtypes to which only a subset of the refinements apply.
+
+The queue, for example, has several lockless subtypes that are automatically concurrent:
+
+spsc_queue myQueue1;    - lockless single producer single consumer concurrent queue; base refinement is cbmrc.
+spmc_queue myQueue2;
+mpsc_queue myQueue3;
+mpmc_queue myQueue4;
+
+c. Variants
 
 var u = Employee.Retrieve(id);      - u is a variant<User, ErrorNotFound>
 u = 99;                             - now u is a variant<User, ErrorNotFound, u8>
@@ -155,7 +166,7 @@ User u = Employee.Retrieve(id);     - u is User, if ErrorNotFound was returned, 
 
 if (u is User) {..}                 - built in is operator returns true if the tag typeid matches the supplied type
 
-c. Morphs And Conversions of Numeric Types
+d. Morphs And Conversions of Numeric Types
 
 When unrestricted, numeric types will upgrade in size (but not downgrade) and switch toward bigger floats (but not away from them).
 When restricted, numeric types will perform conversions.
@@ -207,7 +218,6 @@ class Node {
     weak Node parent;           - Safe observer (becomes null if parent dies)
     raw Node peer;              - fast, unsafe
 }
-
 
 7. First Class Arenas
 
@@ -557,6 +567,248 @@ b. Ranges and slices
 r = range(1, n);            // r is a pointer to an unmerged generator
 for x in r;                 // merge happens here
 
-x = [1, 2, 3, 4][1:]        // 
-"hello world!"[s:-1]
+x = [1, 2, 3, 4][1:]        // this is just a list slice (~ifmrhrss, so array, basically) slice, from the 2nd element to the end
+"hello world!"[x:-1]        // string slice from position x to the 2nd from the last position.
 
+
+19. Threading
+
+- spawn blocks
+
+var myPromise = spawn DoStuff(arg1, arg2);  
+var result = myPromise.Wait();
+
+Here, myList is being accessed from a spwan block, which may trigger refinement morphing:
+
+var myPromise = spawn {
+    DoStuff(myList);        
+}
+
+
+Here, myList may not need to morph:
+
+var myPromise = spawn {
+    list myList;
+    DoStuff(myList);        // might produce morphing or might not, depends on parameter rmask
+}
+
+- parameter refinements
+
+Parameters in function signatures have minimum and maximum refinement masks which represent the nimimum refinements required and maximum refinements 
+allowed for that function. By default a parameter is marked as serial, in the function, it is reference assigned into any non-local, or passed to another 
+function in a parameter with a concurrent requirement, then the parameter is marked as concurrent. 
+
+Literals are refinement-limited to being materialized (non-virtual, that is, non-reference assignable). 
+If a literal is passed to a function that reference assigns that parameter, an error is thrown: "Error: [funcname]-[argname] must be reference-assignable."
+The error should show the source code line (with filename and line number) that creates the rule and the one that violates it.
+
+
+20. Implementation Notes
+
+- compiler input and output
+
+When the compiler is invoked, the command line is read and the project file identified on it is read.
+
+XMC compilation of a project produces a single .obj for that target. The .xmo files exist to speed up incremental compilation.
+So we have these .xmo files that have the declared things, their types and their minimum and maximum refinements, 
+and indexed blocks of emitted machine code for the module.
+
+So if one file is modified and no other files are dependent on it, only that file would need to be parsed.
+We wouldn't need to load or parse the source for any other units, just their .xmo's.
+The .obj can be reconstitued from the .xmo's. 
+In fact that's how it's constituted to begin with; the xmo's are produced in memory, then the .obj is pieced together from the xmo's.
+
+If all we're doing is changing refinement masks, we can reconstitute a .obj without parsing the source code at all.
+But the question is, can we determine if morphing a type of something needs to cause something else's type to morph from just the xmo?
+Nope. So the finalized parse trees from the previous compilation are also saved in the .xmo files, but that part of an xmo doesn't need to 
+be loaded unless we need it.
+
+- incremental compilation
+
+Here's the incremental compilation process:
+
+The source folders are walked and filenames and modtimes are loaded.
+Files whose .xm's are newer than their .xmo's (or whose .xmo's aren't present) and considered modified.
+The symbols, their types, their min and max refinements, and the indexed machine code blocks are loaded from all the unfmodified .xmo's.
+The memory buffer for an .xmo is sized so that the entire .xmo can be loaded if needed.
+The source code is loaded from the modified xm's.
+The parse trees are regenerated for the modified xm's and added to the .xmo's in memory.
+    - symbols are interned, their base types are determined, and refinements are morphed upward from defaults.
+    - this doesn't happen by forward scanning or pre-scanning, it happens by putting information in "pending" structures and back filling.
+    - If morphing of refinements spreads to unmodified xmo's, this triggers a full xmo scan to redetermine all symbol refinements. (see "full xmo scan" below)
+Once symbol refinements are determined, a second scan of the loaded xmo parse trees is performed to generate vectors of code block id's
+for each parse tree. (see "code block generation" below)
+The xmo's that are marked as dirty are saved at the end of the compilation process. 
+Once xmo's are finalized and saved, the coff file is written out and the linker is invoked.
+
+Full xmo scan:
+
+If a full xmo scan is triggered, the parse trees for all the unmodified .xmo's are loaded, and a single scan of all the xmo parse trees
+is performed to remorph all the symbol refinements. A hashset is cleared and then filled during this, to determine which symbols have not yet been
+visited and therefore remain at their default levels. Symbol refinements are copied from the global symbol table to the Xmo's that export or import them.
+Xmo's whose symbol refinements are changed by this are marked as dirty.
+
+
+- full build
+
+Here is the full build compilation process -
+
+The command line is parsed, the project file is parsed.
+The intermediate directory is cleared, the .obj file and the .exe are deleted.
+The source folders are walked and the .xm files are loaded.
+An .xmo file is created in memory for each .xm file.
+Parse trees are generated for each xmo.
+    - Symbols are interned, their base types are determined, and their refinements are determend (morphed upward from defaults).
+The parse trees are rescaned and code block id vectors are put into the parse trees.
+The code block buffers of the xmo files are populated.
+The xmo's are saved.
+The coff file is written.
+
+
+Symbol dependency vectors:
+
+The symbol table contains vectors of symbols whose refinenments depend on that symbol's refinement. This information is saved in the xmo.
+A symbol has a scope id vector that has the file id and the scope ids for the namespace scopes in the symbol's namespace path.
+
+
+- code block generation
+
+Code blocks are currently defined like this:
+
+	// 32 bytes total:
+	struct CodeBlock
+	{
+		uint32_t reserveMask;
+		int32_t	 altTableIndex;		// 0 for the last block in the alternate chain, which is either the only available block or the spill-to-stack block.
+		uint8_t  cost;
+		uint16_t codeSize;
+		uint8_t  patchOffset;
+		uint8_t  code[19];			 
+	};
+
+
+The reserveMask is the registers used by the block:
+
+	Standard GPR Register Mask (32-bit)
+
+	Bit	Hex Value	Reg (64-bit)	Reg (32-bit)	Typical Role
+	0	0x0001		RAX				EAX				Return Value / Accumulator
+	1	0x0002		RCX				ECX				1st Argument (Windows)
+	2	0x0004		RDX				EDX				2nd Argument (Windows)
+	3	0x0008		RBX				EBX				Callee-Saved (Preserve!)
+	4	0x0010		RSP				ESP				Stack Pointer (Always Reserved)
+	5	0x0020		RBP				EBP				Base/Frame Pointer
+	6	0x0040		RSI				ESI				3rd Argument (Linux) / Caller-Saved
+	7	0x0080		RDI				EDI				4th Argument (Linux) / Caller-Saved
+	8	0x0100		R8				R8D				3rd Argument (Windows)
+	9	0x0200		R9				R9D				4th Argument (Windows)
+	10	0x0400		R10				R10D			Temporary / Syscall
+	11	0x0800		R11				R11D			Temporary
+	12	0x1000		R12				R12D			Callee-Saved
+	13	0x2000		R13				R13D			Callee-Saved
+	14	0x4000		R14				R14D			Callee-Saved
+	15	0x8000		R15				R15D			Callee-Saved
+
+
+In data/PrimaryCodeBlocks.h, we have this, so far:
+
+	inline struct BlockIds 
+	{
+		uint16_t
+			prologue = 0,
+			epilogue = 1,
+			lea_rcx_rel = 2,
+			call_rel32 = 3,
+			xor_eax_eax = 4
+		;
+	} bid;
+
+	inline std::vector<CodeBlock> PrimaryCodeBlocks =
+	{
+		// [id: prologue, reserve: 0x10 (RSP), release: 0x00, patch: 3]
+		// 48 83 EC [XX] -> sub rsp, XX
+		{
+			0x10,           // reserveMask (RSP)
+			0,              // altTableIndex (Last in chain)
+			1,				// cost
+			4,              // codeSize
+			3,              // patchOffset (points to the immediate byte)
+			{ 0x48, 0x83, 0xEC, 0x00 } // Machine code
+		},
+
+		// [id: epilogue, reserve: 0x10 (RSP), release: 0x10, patch: 3]
+		// 48 83 C4 [00] -> add rsp, 
+		// C3 -> ret
+		{
+			0x10,           // reserveMask (RSP)
+			0,              // altTableIndex
+			2,				// cost
+			5,              // codeSize
+			3,              // patchOffset (points to the immediate byte)
+			{ 0x48, 0x83, 0xC4, 0x00, 0xC3 } // Machine code
+		},
+
+		// [id: lea_rcx_rel (2), reserve: 0x02 (RCX), release: 0x00, patch: 3]
+		// 48 8D 0D [00 00 00 00] -> lea rcx, [rel ?]
+		{
+			0x02,           // reserveMask (RCX)
+			10,             // altTableIndex
+			1,				 // cost
+			7,              // codeSize
+			3,              // patchOffset (displacement starts at byte 3)
+			{ 0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00 }
+		},
+
+		// [id: call_rel32 (3), reserve: 0x00, release: 0x00, patch: 1]
+		// E8 [00 00 00 00] -> call ?
+		{
+			0x00,           // reserveMask (standard calls handle their own regs)
+			0,              // altTableIndex
+			10,				// cost
+			5,              // codeSize
+			1,              // patchOffset (displacement starts at byte 1)
+			{ 0xE8, 0x00, 0x00, 0x00, 0x00 }
+		},
+
+		// [id: xor_eax_eax (4)] - Cost 0: Special case in x64, zero-latency on most CPUs
+		// 33 C0 is the standard 2-byte form
+		{
+			0x01,			// reserveMask (RAX/EAX)
+			0,				// altTableIndex
+			0,				// Cost (Idiomatic zeroing is often free)
+			2,				// codeSize
+			0xFF,			// patchOffset (No patch needed)
+			{ 0x33, 0xC0 }
+		}
+
+	};
+
+There is also a data/AltCodeBlocks.h where we plan to set up alternate versions of the same code blocks that use different registers, 
+or which spill to stack and recover them before using the same ones.
+
+
+Currently in the emitting steps, emmitter.cpp::UpdateXmoCode function runs ProcessNode (which should probably be renamed) in parallel per xmo and that
+recusursively scans an xmo parse tree an constructs the code block buffers in the xmo's from parse tree node code block id vectors.
+Then WriteToCoff runs in a single thread and goes through all the xmo's in sequence and writes out the coff file including 
+a single .text segment with all the machine code.
+
+So the job of fitting the block id vectors together so that things are optimized and registers aren't clobbered, etc., falls to the 
+parsing step.
+
+
+- Roadmap / implementation work flow
+
+a. Produce and ratify a BNF file for the core language syntax
+b. Update implementation plans and update and test the existing data structures and process code (without adding parsing yet) to support the intended features
+c. Create sufficient parsing to produce syntax errors / validate .xm files.
+d. Introduce further parsing to intern symbols and determine refinements and produce type and morphing related errrors.
+e. Iteratively create further parsing and updates and modifications to the primary and alternate code blocks to produce optimized code block id vectors in parse nodes.
+    - generate a source code snippet to demonstrate and test a language feature
+    - produce parsing that can facilate compilation and linking of the core language test program with the addition of that snippet
+    - compile and execute the test program and do any debugging that's required
+    - produce similar functionality in a C++ test program (in release mode with full optimizations) and compare the compile time and the dissassembled output 
+    - improve parsing until all the feature tests that have been produced so far compile quickly and produce optimal code
+f. Create syntax highlighting for use in Visual Code and Visual Studio
+g. Add support to the coff file writing for including debug information sufficient for use by Visual Studio to be able to set break points and step and trace.
+h. Produce a small standard library and some tests for it
+i. Produce a set of wrappers for commonly used C libraries in game development, like OpenGL, Vulkan, stb_image, etc. and some tests for them

@@ -1,7 +1,5 @@
-﻿#include "pch.h"
-
-// sv/util/StringFunctions.cpp
-
+﻿// sv/util/StringFunctions.cpp
+#include "pch.h"
 #include "StringFunctions.h"
 
 #include <iosfwd>

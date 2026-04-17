@@ -151,6 +151,10 @@
     <ClCompile Include="src\process\Linker.cpp" />
     <ClCompile Include="src\process\LoadModifiedSources.cpp" />
     <ClCompile Include="src\process\Parser.cpp" />
+    <ClCompile Include="src\process\ParserDeclarations.cpp" />
+    <ClCompile Include="src\process\ParserExpressions.cpp" />
+    <ClCompile Include="src\process\ParserFunctions.cpp" />
+    <ClCompile Include="src\process\ParserStatements.cpp" />
     <ClCompile Include="src\process\ProjectFile.cpp" />
     <ClCompile Include="src\process\Util.cpp" />
     <ClCompile Include="src\process\Xmo.cpp" />
@@ -159,7 +163,6 @@
     <ClCompile Include="src\xmc.cpp" />
     <ClCompile Include="src\tool\Logger.cpp" />
     <ClCompile Include="src\tool\StringFunctions.cpp" />
-    <ClCompile Include="src\prebuild\XmaParser.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\AI dumps.txt" />
@@ -186,6 +189,7 @@
     <ClInclude Include="src\process\Linker.h" />
     <ClInclude Include="src\data\MemoryData.h" />
     <ClInclude Include="src\process\Parser.h" />
+    <ClInclude Include="src\process\ParserInternal.h" />
     <ClInclude Include="src\process\ProjectFile.h" />
     <ClInclude Include="src\process\Util.h" />
     <ClInclude Include="src\stl.h" />
@@ -196,14 +200,14 @@
     <ClInclude Include="src\tool\StringFunctions.h" />
     <ClInclude Include="src\tool\TextParser.h" />
     <ClInclude Include="src\win32.h" />
-    <ClInclude Include="src\prebuild\XmaParser.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\prebuild\PrimaryCodeBlocks.xma" />
     <None Include="tests\xmdev\extern.xm_" />
     <None Include="tests\xmdev\xmdev.xmc" />
     <None Include="tests\xmdev\Test01.xm_" />
     <None Include="tests\hello\hello.xmc" />
+    <None Include="tests\xm\1_Declarations\01_namespace.xm" />
+    <None Include="tests\xm\1_Declarations\02_structs.xm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

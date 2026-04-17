@@ -22,12 +22,14 @@ using namespace data;
 
 namespace process {
 	void LoadSourceFiles();
-	void ParseSourceFiles();
+	void ParseModifiedSources();
 	void LoadXmos(bool loadParseTrees);
 	void UpdateXmoCode();
 	void SaveXmos();
-	void WriteToCoff(const std::string& filename);
+	void WriteToCoff();
 }
+
+void RunTestPipeline();
 
 int main(int argc, char* argv[])
 {
@@ -41,11 +43,13 @@ int main(int argc, char* argv[])
 
 		if (CmdLineArgs.Test)
 		{
-			CallCppFunction3();
-			GetPathToLinker();
-			GetLinkerArgs();				// populates data::LinkerArgs
-			RunShellCmd(PathToLinker + LinkerArgs);
-			osdebug << ShellCmdLog << endl;
+			RunTestPipeline();
+			//CallCppFunction3();
+			//GetPathToLinker();
+			//GetLinkerArgs();				// populates data::LinkerArgs
+			//RunShellCmd(PathToLinker + LinkerArgs);
+			//osdebug << ShellCmdLog << endl;
+			if (data::ErrorOccurred) return -1;
 			return 0;
 		}
 
@@ -68,6 +72,7 @@ int main(int argc, char* argv[])
 		}
 		UpdateXmoCode();			// Generates machine code
 		SaveXmos();					// Persists dirty .xmo
+		WriteToCoff();
 
 		auto compileEnd = std::chrono::high_resolution_clock::now();
 		std::chrono::duration<double> compileDist = compileEnd - compileStart;
@@ -103,6 +108,7 @@ int main(int argc, char* argv[])
 	{
 		std::cerr << "an unknown exception was thrown" << std::endl;
 	}
-
+	
+	if (ErrorOccurred) return -1;
 	return 0;
 }

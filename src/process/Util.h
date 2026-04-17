@@ -1,11 +1,14 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace fs = std::filesystem;
 
 namespace process
 {
+	std::string FastLoadFile(const std::filesystem::path& path);
+
 	void RemoveFile(const std::string& pathname);
 
 	std::string GetWin32ErrorString(DWORD errorCode); 
@@ -44,5 +47,5 @@ namespace process
 	std::vector<uint8_t> FastReadBinaryFile(const fs::path& path);
 	void FastWriteBinaryFile(const fs::path& outPath, const std::vector<uint8_t>& buf);
 
-
+	string joinpath(const string& pathA, const string&);
 }

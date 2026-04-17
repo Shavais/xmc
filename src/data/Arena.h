@@ -74,6 +74,53 @@ namespace data
 			return new (mem) T(std::forward<Args>(args)...); // construct and place
 		}
 
+		// allocate a contiguous array of objects in the arena
+		template<typename T>
+		T* ConstructArray(uint32_t count) {
+			void* mem = Allocate(sizeof(T) * count);
+			T* ptr = static_cast<T*>(mem);
+
+			// Call default constructor for each element in the array
+			for (uint32_t i = 0; i < count; ++i) {
+				new (&ptr[i]) T();
+			}
+			return ptr;
+		}
+
+		template <typename T>
+		T* NewArray(uint32_t count) {
+			return (T*)this->Allocate(count * sizeof(T));
+		}
+
 	};
 
-} // ns data
+	// This was an attempt to create an STL compatable arena allocator, but our arena doesn't work for STL containers
+	// because of the chunk boundaries. Also, STL containers really need a heap, not an arena.
+	// 
+	//template <typename T>	
+	//struct ArenaAllocator {
+	//	using value_type = T;
+
+	//	Arena* arena;
+
+	//	// Required constructor
+	//	ArenaAllocator(Arena& a) noexcept : arena(&a) {}
+
+	//	// Required copy constructor for template rebound
+	//	template <typename U>
+	//	ArenaAllocator(const ArenaAllocator<U>& other) noexcept : arena(other.arena) {}
+
+	//	// The core allocation call
+	//	T* allocate(std::size_t n) {
+	//		return static_cast<T*>(arena->Allocate(n * sizeof(T)));
+	//	}
+
+	//	// Deallocate is empty! This is the magic of arenas.
+	//	void deallocate(T* p, std::size_t n) noexcept {}
+
+	//	// Required comparison operators
+	//	bool operator==(const ArenaAllocator& other) const { return arena == other.arena; }
+	//	bool operator!=(const ArenaAllocator& other) const { return arena != other.arena; }
+	//};
+
+} // data

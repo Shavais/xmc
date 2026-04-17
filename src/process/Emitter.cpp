@@ -13,7 +13,10 @@
 #include "data/EmitterData.h"
 #include "data/GlobalData.h"
 #include "data/PrimaryCodeBlocks.h"
+#include "data/ProjectFileData.h"
 #include "data/XmoData.h"
+
+#include "process/Util.h"
 
 #include "tool/BS_thread_pool.hpp"
 #include "tool/Coff.h"
@@ -23,7 +26,6 @@ using namespace data;
 
 namespace process
 {
-
 	void ProcessNode(data::Xmo* xmo, data::ParseTreeNode* node, std::vector<EmitterFuncContext>& funcStack) {
 		if (!node) return;
 		using namespace data;
@@ -33,7 +35,6 @@ namespace process
 		if (isFunction) {
 			xmo->codeBuffer.clear(); // FORCE CLEAR to ensure no ghost data
 			xmo->relocs.clear();
-			xmo->exports[node->funcData->exportIdx].offset = 0;
 
 			// Record the physical start of the function for the Export table
 			xmo->exports[node->funcData->exportIdx].offset = (uint32_t)xmo->codeBuffer.size();
@@ -52,17 +53,21 @@ namespace process
 			}
 		}
 
-		uint64_t symbolIdx = 0;
+		uint32_t symbolIdx = 0;
 
-		// Main Body Emission Loop
-		for (uint64_t i = 0; i < node->codeBlocks.size(); ++i) {
+		// Main Body Emission Loop (Uses raw pointer and explicit codeBlockCount)
+		for (uint32_t i = 0; i < node->codeBlockCount; ++i) {
 			const data::CodeBlock* b = &data::PrimaryCodeBlocks[node->codeBlocks[i]];
 
 			// Handle Relocations (Linear: matches block to next available symbol)
 			if (b->patchOffset != 0xFF) {
-				if (symbolIdx < node->patchSymbols.size()) {
+				if (symbolIdx < node->patchSymbolCount) {
+					// Fetch the interned string name safely
+					string symbolName = string(node->patchSymbols[symbolIdx].str, node->patchSymbols[symbolIdx].len);
+					symbolIdx++;
+
 					xmo->relocs.push_back({
-						node->patchSymbols[symbolIdx++],
+						symbolName,
 						(uint32_t)xmo->codeBuffer.size() + b->patchOffset,
 						4 // IMAGE_REL_AMD64_REL32
 						});
@@ -103,7 +108,8 @@ namespace process
 			}
 
 			// Emit Static Data (Strings/Constants) after the function exit
-			for (const auto& sData : node->staticData) {
+			for (uint32_t i = 0; i < node->staticDataCount; ++i) {
+				const auto& sData = node->staticData[i];
 				xmo->exports[sData.exportIdx].offset = (uint32_t)xmo->codeBuffer.size();
 				xmo->codeBuffer.insert(xmo->codeBuffer.end(), sData.bytes.begin(), sData.bytes.end());
 			}
@@ -137,13 +143,13 @@ namespace process
 	}
 
 	// Takes code buffers from xmo's and writes to the target coff file for the project
-	void WriteToCoff(const std::vector<data::Xmo*>& xmos, const std::string& outputPath) {
+	void WriteToCoff() {
 		Coff coff;
 		uint16_t textIdx = coff.CreateSection(".text", SectionType::Code);
 		std::unordered_map<std::string, uint32_t> globalSymbolMap;
 
 		// 1. Physical Placement
-		for (auto* xmo : xmos) {
+		for (auto* xmo : Xmos) {
 			coff.AppendPadding(textIdx, 16);
 			xmo->tempGlobalOffset = (uint32_t)coff.GetSectionBufferSize(textIdx);
 
@@ -159,7 +165,7 @@ namespace process
 		}
 
 		// 2. Relocation Mapping
-		for (auto* xmo : xmos) {
+		for (auto* xmo : Xmos) {
 			for (auto& rel : xmo->relocs) {
 				uint32_t targetIdx;
 				if (globalSymbolMap.count(rel.targetSymbol)) {
@@ -173,6 +179,6 @@ namespace process
 			}
 		}
 		
-		coff.WriteTo(outputPath);
+		coff.WriteTo(joinpath(outdir, outfile));
 	}
 }

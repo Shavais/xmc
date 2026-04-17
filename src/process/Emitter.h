@@ -4,6 +4,6 @@
 
 namespace process
 {
-	void WriteToCoff(const std::vector<data::Xmo*>& xmos, const std::string& outputPath);
+	void WriteToCoff();
 	void UpdateXmoCode();
 }

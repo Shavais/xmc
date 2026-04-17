@@ -148,6 +148,10 @@ namespace process
 		//	osdebug << std::endl;
 		//}
 
+		data::intdir = GetString("IntPath", ".");
+		data::outdir = GetString("OutPath", ".");
+		data::outfile = data::CmdLineArgs.ProjectName;
+		if (!data::outfile.ends_with(".obj")) data::outfile += ".obj";
 	}
 
 	bool IsInt(const std::string& key) {

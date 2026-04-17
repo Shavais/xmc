@@ -1,3 +1,4 @@
+// TextParser.h
 #pragma once
 
 #include <algorithm>
@@ -13,6 +14,11 @@ using std::min;
 using std::pair;
 using std::string_view;
 using std::vector;
+
+namespace process
+{
+	extern thread_local bool BraceMatchError;
+}
 
 class TextParser
 {
@@ -243,6 +249,8 @@ public:
 	// returns a stringview containing the content of a curly brace pair which is at the current parser position.
 	// advances the parser view's start pointer just past the ending brace.
 	string_view ReadBracedContent(char startbrace = '{', char endbrace = '}') {
+		process::BraceMatchError = false; 
+		
 		uint64_t start = view_.find(startbrace);
 		if (start == string_view::npos) return {};
 
@@ -271,9 +279,14 @@ public:
 		{
 			result = view_.substr(start + 1);
 			view_.remove_prefix(view_.size());
+			process::BraceMatchError = true;
 		}
 
 		return result;
 	}
 
+	inline void Consume(size_t length)
+	{
+		view_.remove_prefix(std::min(length, view_.size()));
+	}
 };

@@ -9,7 +9,10 @@
 #include "data/EmitterData.h"
 #include "data/ParserData.h"
 #include "data/PrimaryCodeBlocks.h"
+
 #include "process/Emitter.h"
+#include "process/Parser.h"
+#include "process/Util.h"
 
 #include "tool/Coff.h"
 
@@ -367,7 +370,7 @@ void CallCppFunction2() {
 
 	// --- 2. Write to COFF ---
 	std::vector<data::Xmo*> xmos = { xmoHelper, xmoMain };
-	WriteToCoff(xmos, "hello.obj");
+	WriteToCoff();
 
 	// Cleanup (in a real app, use smart pointers!)
 	delete xmoHelper;
@@ -376,78 +379,126 @@ void CallCppFunction2() {
 
 void CallCppFunction3() {
 	using namespace process;
+	using namespace data;
 
 	// --- Setup Helper XMO (WriteToConsole) ---
-	data::Xmo* xmoHelper = new data::Xmo();
+	Xmo* xmoHelper = new Xmo();
 	xmoHelper->name = "WriteToConsole";
 
-	// push export
-	data::XmoExport helperExp;
+	// push export (std::vector on Xmo is okay, just ParseTreeNode needs the arena)
+	XmoExport helperExp;
 	helperExp.name = "WriteToConsole";
 	helperExp.offset = 0; // Fixed by emitter
 	xmoHelper->exports.push_back(helperExp);
 
-	data::FunctionNodeData* hFunc = new data::FunctionNodeData();
+	// Allocate function data on the file arena
+	FunctionNodeData* hFunc = xmoHelper->arena.Construct<FunctionNodeData>();
 	hFunc->name = "WriteToConsole";
 	hFunc->isLeaf = false;     // Signals that it calls SVGE_Log
 	hFunc->exportIdx = 0;
-	// 32 (shadow space) + 8 (padding/alignment) = 40 (0x28)
-	hFunc->totalStackSize = 40;
+	hFunc->totalStackSize = 40; // 32 (shadow space) + 8 (padding/alignment)
 
-	data::ParseTreeNode* hRoot = new data::ParseTreeNode();
+	// Allocate root node on the file arena
+	ParseTreeNode* hRoot = xmoHelper->arena.Construct<ParseTreeNode>();
 	hRoot->funcData = hFunc;
 
 	// Body only: Emitter injects prologue/epilogue automatically
-	hRoot->codeBlocks = { bid.lea_rcx_rel, bid.call_rel32 };
-	hRoot->patchSymbols = { "msg", "SVGE_Log" };
-	xmoHelper->parseTree = hRoot;
+	// Assigning Code Blocks
+	hRoot->codeBlockCount = 2;
+	hRoot->codeBlocks = (uint16_t*)xmoHelper->arena.Allocate(2 * sizeof(uint16_t));
+	hRoot->codeBlocks[0] = bid.lea_rcx_rel;
+	hRoot->codeBlocks[1] = bid.call_rel32;
 
+	// Assigning Patch Symbols
+	hRoot->patchSymbolCount = 2;
+	hRoot->patchSymbols = (InternedString*)xmoHelper->arena.Allocate(2 * sizeof(InternedString));
+	hRoot->patchSymbols[0] = InternString("msg");
+	hRoot->patchSymbols[1] = InternString("SVGE_Log");
+
+	xmoHelper->parseTree = hRoot;
+	xmoHelper->dirty_ = true;
 
 	// --- Setup Main XMO (main) ---
-	data::Xmo* xmoMain = new data::Xmo();
+	Xmo* xmoMain = new Xmo();
 	xmoMain->name = "main";
 
 	// push main export
-	data::XmoExport mainExp;
+	XmoExport mainExp;
 	mainExp.name = "main";
 	xmoMain->exports.push_back(mainExp);
 
 	// push msg export 
-	data::XmoExport msgExp;
+	XmoExport msgExp;
 	msgExp.name = "msg";
 	xmoMain->exports.push_back(msgExp);
 
-	data::FunctionNodeData* mFunc = new data::FunctionNodeData();
+	FunctionNodeData* mFunc = xmoMain->arena.Construct<FunctionNodeData>();
 	mFunc->name = "main";
 	mFunc->isLeaf = false;     // it calls WriteToConsole
 	mFunc->exportIdx = 0;
 	mFunc->totalStackSize = 40;
 
-	data::ParseTreeNode* mRoot = new data::ParseTreeNode();
+	ParseTreeNode* mRoot = xmoMain->arena.Construct<ParseTreeNode>();
 	mRoot->funcData = mFunc;
 
 	// Body only: 1 block, 1 symbol. Perfect alignment.
-	mRoot->codeBlocks = { bid.call_rel32, bid.xor_eax_eax }; // Add this: 31 C0 or 33 C0
-	
-	mRoot->patchSymbols = { "WriteToConsole" };
+	mRoot->codeBlockCount = 2;
+	mRoot->codeBlocks = (uint16_t*)xmoMain->arena.Allocate(2 * sizeof(uint16_t));
+	mRoot->codeBlocks[0] = bid.call_rel32;
+	mRoot->codeBlocks[1] = bid.xor_eax_eax; // Add this: 31 C0 or 33 C0
+
+	mRoot->patchSymbolCount = 1;
+	mRoot->patchSymbols = (InternedString*)xmoMain->arena.Allocate(1 * sizeof(InternedString));
+	mRoot->patchSymbols[0] = InternString("WriteToConsole");
 
 	// Setup Static Data for "msg"
-	data::StaticData sData;
-	sData.name = "msg";
-	sData.exportIdx = 1;
+	mRoot->staticDataCount = 1;
+	mRoot->staticData = (StaticData*)xmoMain->arena.Allocate(1 * sizeof(StaticData));
+
+	mRoot->staticData[0].name = "msg";
+	mRoot->staticData[0].exportIdx = 1;
+
 	std::string text = "XMC Success!\n";
-	sData.bytes.assign(text.begin(), text.end());
-	sData.bytes.push_back(0); // Null terminator
-	mRoot->staticData.push_back(sData);
+	mRoot->staticData[0].bytes.assign(text.begin(), text.end());
+	mRoot->staticData[0].bytes.push_back(0); // Null terminator
 
 	xmoMain->parseTree = mRoot;
+	xmoMain->dirty_ = true;
 
 	// --- The Pipeline ---
-	std::vector<Xmo*> xmos = { xmoHelper, xmoMain };
+	Xmos = { xmoHelper, xmoMain };
 
 	// Threads for the Thread Pool
 	UpdateXmoCode();
-	WriteToCoff(xmos, "hello.obj");
+	WriteToCoff();
 
-	// Cleanup: In production, delete your tree pointers!
+	// Cleanup: Now `delete xmoHelper;` and `delete xmoMain;` handle everything cleanly!
+}
+
+#include "data/SourceFileData.h"
+
+void RunTestPipeline() {
+	using namespace process;
+	string testname = "02_structs";
+
+	// 1. Manually add our test file to the modified list to force processing
+	data::ModifiedSources.push_back(testname);
+
+	// Fill the FileInfo with a mock absolute path so the loader skips trying to find it on disk
+	data::FileInfo info;
+	info.fullPath = "C:/Shavais/Projects/C++/xmc/tests/xm/1_Declarations/" + testname + ".xm";
+
+	// 2. Read the source code using your Fast Memory-Mapped File Loader
+	info.sourceText = FastLoadFile(info.fullPath);
+
+	if (info.sourceText.empty()) {
+		std::cout << "Test failed: Could not load " + testname + ".xm";
+		return;
+	}
+
+	data::SourceFiles[testname] = std::move(info);
+
+	// 3. Run the thread-pooled parallel parser we upgraded!
+	std::cout << "Starting parse pass...\n";
+	ParseModifiedSources();
 }

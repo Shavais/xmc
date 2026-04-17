@@ -1,4 +1,4 @@
-// PrimaryCodeBlocis.h - generated from PrimaryCodeBlocks.xma
+// PrimaryCodeBlocks.h 
 
 #pragma once
 
@@ -50,7 +50,6 @@ namespace data
 		// 48 83 EC [XX] -> sub rsp, XX
 		{
 			0x10,           // reserveMask (RSP)
-			0x00,           // releaseMask
 			0,              // altTableIndex (Last in chain)
 			1,				// cost
 			4,              // codeSize
@@ -63,7 +62,6 @@ namespace data
 		// C3 -> ret
 		{
 			0x10,           // reserveMask (RSP)
-			0x10,           // releaseMask (Frees RSP)
 			0,              // altTableIndex
 			2,				// cost
 			5,              // codeSize
@@ -75,7 +73,6 @@ namespace data
 		// 48 8D 0D [00 00 00 00] -> lea rcx, [rel ?]
 		{
 			0x02,           // reserveMask (RCX)
-			0x00,           // releaseMask
 			10,             // altTableIndex
 			1,				 // cost
 			7,              // codeSize
@@ -87,7 +84,6 @@ namespace data
 		// E8 [00 00 00 00] -> call ?
 		{
 			0x00,           // reserveMask (standard calls handle their own regs)
-			0x00,           // releaseMask
 			0,              // altTableIndex
 			10,				// cost
 			5,              // codeSize
@@ -99,14 +95,12 @@ namespace data
 		// 33 C0 is the standard 2-byte form
 		{
 			0x01,			// reserveMask (RAX/EAX)
-			0x01,			// releaseMask (It effectively defines it)
 			0,				// altTableIndex
 			0,				// Cost (Idiomatic zeroing is often free)
 			2,				// codeSize
 			0xFF,			// patchOffset (No patch needed)
 			{ 0x33, 0xC0 }
 		}
-
 
 	};
 

@@ -51,13 +51,22 @@
     <ClCompile Include="src\process\Parser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\prebuild\XmaParser.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\process\LoadModifiedSources.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\process\Xmo.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\ParserDeclarations.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\ParserFunctions.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\ParserStatements.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\process\ParserExpressions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -140,9 +149,6 @@
     <ClInclude Include="src\data\ParserData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\prebuild\XmaParser.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\tool\BS_thread_pool.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -155,12 +161,16 @@
     <ClInclude Include="src\data\Arena.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\process\ParserInternal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\hello\hello.xmc" />
     <None Include="tests\xmdev\Test01.xm_" />
-    <None Include="src\prebuild\PrimaryCodeBlocks.xma" />
     <None Include="tests\xmdev\extern.xm_" />
     <None Include="tests\xmdev\xmdev.xmc" />
+    <None Include="tests\xm\1_Declarations\01_namespace.xm" />
+    <None Include="tests\xm\1_Declarations\02_structs.xm" />
   </ItemGroup>
 </Project>

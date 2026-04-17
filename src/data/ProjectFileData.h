@@ -11,4 +11,8 @@ namespace data
 	inline std::unordered_map<std::string, ConfigSection> RawProjectFile;
 	inline ConfigSection ProjectFile;
 	inline std::string DefaultConfig;
+
+	inline string intdir = ".";
+	inline string outdir = ".";
+	inline string outfile = "";
 }

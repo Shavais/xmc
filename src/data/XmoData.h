@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "data/Arena.h"
-
 #include "CodeBlock.h"
 
 using std::string;
@@ -41,43 +40,46 @@ namespace data
 
 	struct XmoScope {
 		uint32_t id;
-		uint32_t parentId;   // 0 for Global
-		string name;    // Optional: for debugging or namespaces
+		uint32_t parentId;
+		string   name;
 	};
 
-	struct XmoImport { // Renamed from Relocation for clarity
-		string targetSymbol;
-		uint32_t expectedMask;   // <--- What we thought it was when we compiled
+	struct XmoImport {
+		string   targetSymbol;
+		uint32_t expectedMask;
 	};
 
 	struct XmoExport {
-		string name;
-		uint32_t offset;
-		uint32_t refinementMask;
-		uint32_t scopeId;
+		string                name;
+		uint32_t              offset;
+		uint32_t              minrmask;
+		uint32_t              maxrmask;
+		// Full namespace path, outermost (file) scope first.
+		// Replaces the old flat scopeId.
+		std::vector<uint32_t> namespacePath;
 	};
 
 	struct XmoRelocation {
-		string targetSymbol; // Name of what we are calling
-		uint32_t offset;          // Offset in this Xmo's code to patch
-		uint16_t type;            // e.g., IMAGE_REL_AMD64_REL32
+		string   targetSymbol;
+		uint32_t offset;
+		uint16_t type;
 	};
 
 	struct ParseTreeNode;
 
 	struct Xmo {
-		string name;
-		vector<uint8_t> codeBuffer;
-		vector<XmoExport> exports;
+		string              name;
+		vector<uint8_t>     codeBuffer;
+		vector<XmoExport>   exports;
 		vector<XmoRelocation> relocs;
-		vector<XmoScope> scopeTree;
-		ParseTreeNode* parseTree;
-		uint32_t tempGlobalOffset = 0;
-		bool dirty_ = false;
-		FileMapping mapping;
-		Arena arena;
+		vector<XmoScope>    scopeTree;
+		ParseTreeNode*      parseTree;
+		uint32_t            tempGlobalOffset = 0;
+		bool                dirty_ = false;
+		FileMapping         mapping;
+		Arena               arena;
 	};
 
 	inline vector<Xmo*> Xmos;
 
-}
+} // namespace data

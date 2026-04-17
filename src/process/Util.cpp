@@ -156,4 +156,12 @@ namespace process
 		CloseHandle(hFile);
 	}
 
+	string joinpath(const string& pathA, const string& pathB)
+	{
+		string joined = pathA;
+		if (pathA.ends_with("/") || pathA.ends_with("\\")) joined += pathB;
+		else joined += "/" + pathB;
+		return joined;
+	}
+
 }

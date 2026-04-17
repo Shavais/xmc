@@ -1,3 +1,4 @@
+// process/Xmo.cpp
 #include "pch.h"
 
 #include <filesystem>
@@ -28,31 +29,39 @@ namespace process {
 #pragma region Saving
 
 	void WriteParseTree(std::vector<uint8_t>& buf, const data::ParseTreeNode* node) {
-		// Write null marker (0 for null, 1 for valid)
 		if (!node) {
 			WritePod(buf, (uint8_t)0);
 			return;
 		}
 		WritePod(buf, (uint8_t)1);
 
-		// 1. Code Blocks
-		WritePod(buf, (uint32_t)node->codeBlocks.size());
-		for (auto cb : node->codeBlocks) WritePod(buf, cb);
+		// Code Blocks (Uses raw array and explicit codeBlockCount)
+		WritePod(buf, node->codeBlockCount);
+		for (uint32_t i = 0; i < node->codeBlockCount; ++i) {
+			WritePod(buf, node->codeBlocks[i]);
+		}
 
-		// 2. Patch Symbols
-		WritePod(buf, (uint32_t)node->patchSymbols.size());
-		for (const auto& sym : node->patchSymbols) WriteString(buf, sym);
+		// Patch Symbols (Unpacks InternedString into a temporary std::string)
+		WritePod(buf, node->patchSymbolCount);
+		for (uint32_t i = 0; i < node->patchSymbolCount; ++i) {
+			const auto& interned = node->patchSymbols[i];
+			std::string symStr(interned.str, interned.len);
+			WriteString(buf, symStr);
+		}
 
-		// 3. Static Data
-		WritePod(buf, (uint32_t)node->staticData.size());
-		for (const auto& sd : node->staticData) {
+		// Static Data (Uses raw array and explicit staticDataCount)
+		WritePod(buf, node->staticDataCount);
+		for (uint32_t i = 0; i < node->staticDataCount; ++i) {
+			const auto& sd = node->staticData[i];
 			WriteString(buf, sd.name);
 			WritePod(buf, sd.exportIdx);
+
+			// sd.bytes is still a std::vector, so .size() is still valid here
 			WritePod(buf, (uint32_t)sd.bytes.size());
 			buf.insert(buf.end(), sd.bytes.begin(), sd.bytes.end());
 		}
 
-		// 4. Function Metadata
+		// Function Metadata
 		if (node->funcData) {
 			WritePod(buf, (uint8_t)1);
 			WriteString(buf, node->funcData->name);
@@ -64,10 +73,9 @@ namespace process {
 			WritePod(buf, (uint8_t)0);
 		}
 
-		// 5. Children (Recursive Step)
+		// Children (Recursive)
 		WritePod(buf, node->childCount);
 		for (uint32_t i = 0; i < node->childCount; ++i) {
-			// Correctly pass the specific child to the next recursive call
 			WriteParseTree(buf, node->children[i]);
 		}
 	}
@@ -80,22 +88,26 @@ namespace process {
 		// Write Header Placeholder
 		data::XmoHeader header;
 		size_t headerPos = buf.size();
-		WritePod(buf, header); // Magic, Version, and 0-filled offsets
+		WritePod(buf, header);
 
-		// Write Exports (Symbols) - ALWAYS FIRST for discovery speed
+		// Write Exports — ALWAYS FIRST for discovery speed
 		header.exportTableOffset = (uint32_t)buf.size();
-		uint32_t expCount = static_cast<uint32_t>(xmo->exports.size());
-		WritePod(buf, expCount);
+		WritePod(buf, (uint32_t)xmo->exports.size());
 		for (const auto& exp : xmo->exports) {
 			WriteString(buf, exp.name);
 			WritePod(buf, exp.offset);
-			WritePod(buf, exp.refinementMask);
-			WritePod(buf, exp.scopeId);
+
+			// --- UPDATED HERE: Dropped refinementMask and added min/max ---
+			WritePod(buf, exp.minrmask);
+			WritePod(buf, exp.maxrmask);
+
+			// Write the full namespace path so DeserializeXmo can reconstruct it.
+			WritePod(buf, (uint32_t)exp.namespacePath.size());
+			for (uint32_t id : exp.namespacePath) WritePod(buf, id);
 		}
 
 		// Write Scopes
-		uint32_t scopeCount = static_cast<uint32_t>(xmo->scopeTree.size());
-		WritePod(buf, scopeCount);
+		WritePod(buf, (uint32_t)xmo->scopeTree.size());
 		for (const auto& scope : xmo->scopeTree) {
 			WritePod(buf, scope.id);
 			WritePod(buf, scope.parentId);
@@ -104,13 +116,11 @@ namespace process {
 
 		// Write Code Buffer
 		header.codeBufferOffset = (uint32_t)buf.size();
-		uint32_t codeSize = static_cast<uint32_t>(xmo->codeBuffer.size());
-		WritePod(buf, codeSize);
+		WritePod(buf, (uint32_t)xmo->codeBuffer.size());
 		buf.insert(buf.end(), xmo->codeBuffer.begin(), xmo->codeBuffer.end());
 
 		// Write Relocs
-		uint32_t relCount = static_cast<uint32_t>(xmo->relocs.size());
-		WritePod(buf, relCount);
+		WritePod(buf, (uint32_t)xmo->relocs.size());
 		for (const auto& rel : xmo->relocs) {
 			WriteString(buf, rel.targetSymbol);
 			WritePod(buf, rel.offset);
@@ -126,18 +136,15 @@ namespace process {
 
 		FastWriteBinaryFile(outPath, buf);
 	}
-
 	void SaveXmos() {
 		auto start = std::chrono::high_resolution_clock::now();
 
-		// Retrieve paths from your global data config
 		std::string intPathStr = std::get<std::string>(data::ProjectFile["IntPath"]);
 		std::string srcRootStr = std::get<std::string>(data::ProjectFile["SourceRoot"]);
 
 		fs::path xmoRoot = fs::absolute(intPathStr) / "xmo";
 		fs::path srcRoot = fs::absolute(srcRootStr);
 
-		// Full builds wipe the cache
 		if (data::CmdLineArgs.Full && fs::exists(xmoRoot)) {
 			fs::remove_all(xmoRoot);
 		}
@@ -154,7 +161,6 @@ namespace process {
 					auto it = data::SourceFiles.find(xmo->name);
 					if (it == data::SourceFiles.end()) return;
 
-					// Maintain directory structure: src/foo/bar.xm -> int/xmo/foo/bar.xmo
 					fs::path relPath = fs::relative(it->second.fullPath, srcRoot);
 					fs::path outPath = xmoRoot / relPath;
 					outPath.replace_extension(".xmo");
@@ -168,7 +174,8 @@ namespace process {
 
 		auto end = std::chrono::high_resolution_clock::now();
 		std::chrono::duration<double> diff = end - start;
-		osdebug << sformat("SaveXmos: %zu files processed, %zu saved in %.3f seconds.", data::Xmos.size(), savedCount, diff.count()) << endl;
+		osdebug << sformat("SaveXmos: %zu files processed, %zu saved in %.3f seconds.",
+			data::Xmos.size(), savedCount, diff.count()) << endl;
 	}
 
 #pragma endregion
@@ -176,7 +183,10 @@ namespace process {
 #pragma region Loading
 
 	bool MapXmoFile(const fs::path& path, data::FileMapping& outMapping) {
-		outMapping.fileHandle = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, NULL);
+		outMapping.fileHandle = CreateFileW(
+			path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+			NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, NULL
+		);
 
 		if (outMapping.fileHandle == INVALID_HANDLE_VALUE) return false;
 
@@ -184,7 +194,9 @@ namespace process {
 		GetFileSizeEx(outMapping.fileHandle, &size);
 		outMapping.size = (size_t)size.QuadPart;
 
-		outMapping.mappingHandle = CreateFileMappingW(outMapping.fileHandle, NULL, PAGE_READONLY, 0, 0, NULL);
+		outMapping.mappingHandle = CreateFileMappingW(
+			outMapping.fileHandle, NULL, PAGE_READONLY, 0, 0, NULL
+		);
 		if (!outMapping.mappingHandle) {
 			CloseHandle(outMapping.fileHandle);
 			return false;
@@ -195,49 +207,49 @@ namespace process {
 	}
 
 	data::ParseTreeNode* ReadParseTreeFromPtr(const uint8_t* base, uint64_t& offset, data::Arena& arena) {
-		// Check for Null Marker
-		// We wrote 0 for null and 1 for valid nodes
-		if (ReadPodFromPtr<uint8_t>(base, offset) == 0) {
-			return nullptr;
-		}
+		if (ReadPodFromPtr<uint8_t>(base, offset) == 0) return nullptr;
 
-		// Allocate and Initialize the Node
-		// We use the Arena to avoid individual 'new' heap calls
 		auto* node = (data::ParseTreeNode*)arena.Allocate(sizeof(data::ParseTreeNode));
-		new (node) data::ParseTreeNode(); // Placement new: initializes the vectors/members
+		new (node) data::ParseTreeNode();
 
-		// Load Code Blocks
-		uint32_t cbCount = ReadPodFromPtr<uint32_t>(base, offset);
-		node->codeBlocks.reserve(cbCount);
-		for (uint32_t i = 0; i < cbCount; ++i) {
-			node->codeBlocks.push_back(ReadPodFromPtr<uint16_t>(base, offset));
+		// Code Blocks (Uses raw array and explicit codeBlockCount)
+		node->codeBlockCount = ReadPodFromPtr<uint32_t>(base, offset);
+		if (node->codeBlockCount > 0) {
+			node->codeBlocks = (uint16_t*)arena.Allocate(sizeof(uint16_t) * node->codeBlockCount);
+			for (uint32_t i = 0; i < node->codeBlockCount; ++i) {
+				node->codeBlocks[i] = ReadPodFromPtr<uint16_t>(base, offset);
+			}
 		}
 
-		// Load Patch Symbols
-		uint32_t psCount = ReadPodFromPtr<uint32_t>(base, offset);
-		node->patchSymbols.reserve(psCount);
-		for (uint32_t i = 0; i < psCount; ++i) {
-			node->patchSymbols.push_back(ReadStringFromPtr(base, offset));
+		// Patch Symbols (Decouples raw strings into your sharded SymbolTable)
+		node->patchSymbolCount = ReadPodFromPtr<uint32_t>(base, offset);
+		if (node->patchSymbolCount > 0) {
+			node->patchSymbols = (data::InternedString*)arena.Allocate(sizeof(data::InternedString) * node->patchSymbolCount);
+			for (uint32_t i = 0; i < node->patchSymbolCount; ++i) {
+				std::string tempStr = ReadStringFromPtr(base, offset);
+				// This caches the hash and binds the backing char* to your global SymbolArena
+				node->patchSymbols[i] = process::InternString(tempStr.c_str());
+			}
 		}
 
-		// Load Static Data
-		uint32_t sdCount = ReadPodFromPtr<uint32_t>(base, offset);
-		node->staticData.reserve(sdCount);
-		for (uint32_t i = 0; i < sdCount; ++i) {
-			data::StaticData sd;
-			sd.name = ReadStringFromPtr(base, offset);
-			sd.exportIdx = ReadPodFromPtr<uint64_t>(base, offset);
-			uint32_t byteCount = ReadPodFromPtr<uint32_t>(base, offset);
+		// Static Data (Uses raw array and explicit staticDataCount)
+		node->staticDataCount = ReadPodFromPtr<uint32_t>(base, offset);
+		if (node->staticDataCount > 0) {
+			node->staticData = (data::StaticData*)arena.Allocate(sizeof(data::StaticData) * node->staticDataCount);
+			for (uint32_t i = 0; i < node->staticDataCount; ++i) {
+				data::StaticData& sd = node->staticData[i];
+				new (&sd) data::StaticData(); // placement new for std::string and vector internals
 
-			// Efficiency note: We still copy bytes here. 
-			// For a kernel-scale build, we eventually want to point directly to 'base + offset'
-			sd.bytes.assign(base + offset, base + offset + byteCount);
-			offset += byteCount;
+				sd.name = ReadStringFromPtr(base, offset);
+				sd.exportIdx = ReadPodFromPtr<uint64_t>(base, offset);
 
-			node->staticData.push_back(std::move(sd));
+				uint32_t byteCount = ReadPodFromPtr<uint32_t>(base, offset);
+				sd.bytes.assign(base + offset, base + offset + byteCount);
+				offset += byteCount;
+			}
 		}
 
-		// Load Function Metadata
+		// Function Metadata
 		if (ReadPodFromPtr<uint8_t>(base, offset) == 1) {
 			node->funcData = (data::FunctionNodeData*)arena.Allocate(sizeof(data::FunctionNodeData));
 			new (node->funcData) data::FunctionNodeData();
@@ -247,11 +259,10 @@ namespace process {
 			node->funcData->isLeaf = ReadPodFromPtr<bool>(base, offset);
 		}
 
-		// Recursive Child Loading
+		// Children
 		node->childCount = ReadPodFromPtr<uint32_t>(base, offset);
 		if (node->childCount > 0) {
-			// Allocate the array of pointers in the arena to keep it all contiguous
-			node->children = (ParseTreeNode**)arena.Allocate(sizeof(ParseTreeNode*) * node->childCount);
+			node->children = (data::ParseTreeNode**)arena.Allocate(sizeof(data::ParseTreeNode*) * node->childCount);
 			for (uint32_t i = 0; i < node->childCount; ++i) {
 				node->children[i] = ReadParseTreeFromPtr(base, offset, arena);
 			}
@@ -259,40 +270,48 @@ namespace process {
 
 		return node;
 	}
-
 	std::mutex xmoListMutex;
 
 	void DeserializeXmo(data::Xmo* xmo, const uint8_t* base, bool loadParseTree) {
 		auto* header = reinterpret_cast<const data::XmoHeader*>(base);
 		if (header->magic != 0x584D4F21) return;
 
-		// Discovery: Only jump to the Export/Symbol table
 		uint64_t offset = header->exportTableOffset;
 
 		// Exports
 		uint32_t expCount = ReadPodFromPtr<uint32_t>(base, offset);
 		for (uint32_t i = 0; i < expCount; ++i) {
-			std::string tempName = ReadStringFromPtr(base, offset);
-			uint32_t scopeId = ReadPodFromPtr<uint32_t>(base, offset);
-			Symbol* symbol = GetOrCreateSymbol(tempName.c_str(), scopeId);
+			std::string name = ReadStringFromPtr(base, offset);
+			uint32_t expOffset = ReadPodFromPtr<uint32_t>(base, offset);
+			uint32_t minrmask = ReadPodFromPtr<uint32_t>(base, offset);
+			uint32_t maxrmask = ReadPodFromPtr<uint32_t>(base, offset);
+
+			// Read the full namespace path written by WriteXmoFile
+			uint32_t pathLen = ReadPodFromPtr<uint32_t>(base, offset);
+			std::vector<uint32_t> namespacePath;
+			namespacePath.reserve(pathLen);
+			for (uint32_t j = 0; j < pathLen; ++j)
+				namespacePath.push_back(ReadPodFromPtr<uint32_t>(base, offset));
+
+			Symbol* symbol = InternSymbol(name.c_str(), std::move(namespacePath));
 			symbol->originXmo = xmo;
-			symbol->offset = ReadPodFromPtr<uint32_t>(base, offset);
-			symbol->rmask = ReadPodFromPtr<uint32_t>(base, offset);
+			symbol->offset    = expOffset;
+			symbol->minrmask  = minrmask;
+			symbol->maxrmask = maxrmask;
 		}
-		// Scopes (Assuming they follow exports in file)
+
+		// Scopes
 		uint32_t scopeCount = ReadPodFromPtr<uint32_t>(base, offset);
 		for (uint32_t i = 0; i < scopeCount; ++i) {
 			data::XmoScope scope;
-			scope.id = ReadPodFromPtr<uint32_t>(base, offset);
+			scope.id       = ReadPodFromPtr<uint32_t>(base, offset);
 			scope.parentId = ReadPodFromPtr<uint32_t>(base, offset);
-			scope.name = ReadStringFromPtr(base, offset);
+			scope.name     = ReadStringFromPtr(base, offset);
 			xmo->scopeTree.push_back(scope);
 		}
 
-		// Full Scan: Load the massive parse tree only if requested
 		if (loadParseTree) {
 			offset = header->parseTreeOffset;
-			// Pass the Xmo's specific Arena to keep this file's nodes contiguous
 			xmo->parseTree = ReadParseTreeFromPtr(base, offset, xmo->arena);
 		}
 	}
@@ -309,7 +328,6 @@ namespace process {
 		std::unordered_set<std::string> modified(data::ModifiedSources.begin(), data::ModifiedSources.end());
 
 		for (auto const& [name, srcInfo] : data::SourceFiles) {
-			// Only load if it WASN'T modified in this compile session
 			if (modified.find(name) == modified.end()) {
 				pool.detach_task([&, name, srcInfo, loadParseTrees, xmoRoot, srcRoot]() {
 					fs::path relPath = fs::relative(srcInfo.fullPath, srcRoot);
@@ -328,14 +346,13 @@ namespace process {
 							delete xmo;
 						}
 					}
-					});
+				});
 			}
 		}
 		pool.wait();
 
 		auto end = std::chrono::high_resolution_clock::now();
 		std::chrono::duration<double> diff = end - start;
-
 		osdebug << sformat("LoadXmos: %zu unmodified XMOs loaded in %.3f seconds.",
 			data::Xmos.size(), diff.count()) << endl;
 	}
