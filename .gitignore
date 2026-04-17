@@ -362,3 +362,6 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /src/downloaded
+/doc/journal.txt
+/doc/AI_conversation_journal.txt
+/doc/AI dumps.txt
