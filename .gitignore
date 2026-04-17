@@ -365,3 +365,5 @@ FodyWeavers.xsd
 /doc/journal.txt
 /doc/AI_conversation_journal.txt
 /doc/AI dumps.txt
+/tests/hello/hello.exe
+/tests/hello/svge.lib
