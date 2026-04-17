@@ -368,3 +368,4 @@ FodyWeavers.xsd
 /doc/AI dumps.txt
 /tests/hello/hello.exe
 /tests/hello/svge.lib
+deps/src/
