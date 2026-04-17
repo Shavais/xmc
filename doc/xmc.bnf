@@ -1,0 +1,703 @@
+; xmc Language Grammar (Tentative BNF, Revision 3)
+; ==================================================
+; Notation:
+;   ::=         definition
+;   |           alternation
+;   { }         zero or more repetitions
+;   [ ]         zero or one (optional)
+;   ( )         grouping
+;   "x"         literal terminal
+;   UPPER       lexer token (defined in the Tokens section at the bottom)
+;
+; Namespace separator: "."  (same character as member access operator)
+; The parser disambiguates by context:
+;   - If the leftmost identifier resolves as a value in the current scope -> member access chain
+;   - If it resolves as a namespace name -> namespace path until a segment resolves as a symbol,
+;     then member access from that point onward
+;   - If it resolves as neither -> undefined symbol error
+; This rule is consistent and unambiguous given a populated symbol table.
+;
+; ":" is used only as:
+;   - The first character of ":=" (reference assignment, a single two-character token)
+;   - Arena qualifier in a declaration: var x:arenaname
+; The ternary operator is excluded from xmc to avoid ambiguity with these uses of ":".
+; Conditional expressions use if/else syntax instead (see conditional-expr below).
+
+
+; ===========================================================================
+; TOP LEVEL
+; ===========================================================================
+
+program
+    ::= { top-level-declaration }
+
+top-level-declaration
+    ::= namespace-declaration
+    |   function-declaration
+    |   extern-declaration
+    |   struct-declaration
+    |   class-declaration
+    |   error-declaration
+    |   variable-declaration
+    |   arena-declaration
+
+
+; ===========================================================================
+; NAMESPACES
+; ===========================================================================
+
+; Namespace blocks must begin with the "namespace" keyword.
+; You cannot declare a symbol into a namespace other than the current one.
+; "var ns1.varname = x;" is not legal as a declaration.
+; "ns1.varname" in an expression context is a qualified reference.
+
+namespace-declaration
+    ::= "namespace" IDENTIFIER "{" { top-level-declaration } "}"
+
+
+; ===========================================================================
+; QUALIFIED NAMES (namespace paths and member access)
+; ===========================================================================
+
+; "." serves as both namespace path separator and member access operator.
+; Disambiguation is by symbol table context at parse/resolve time:
+;   identifier segments that name namespaces are namespace path components;
+;   the first segment that names a value switches to member access.
+; The full path only needs to be specified when there is ambiguity;
+; the shortest unambiguous prefix is sufficient.
+
+qualified-name
+    ::= IDENTIFIER { "." IDENTIFIER }
+
+
+; ===========================================================================
+; VARIABLE DECLARATIONS
+; ===========================================================================
+
+; A ":" after the variable name (with no preceding expression) is the arena
+; qualifier. This is only syntactically valid when the declaration begins with
+; an explicit type keyword or "var". Without one of those, "name.something"
+; is parsed as a qualified reference (member access or namespace path),
+; not a declaration.
+;
+; The ugly mask (refinement ceiling) immediately follows the variable name
+; with no whitespace, using "~" and 1-8 positional letters. Unspecified
+; trailing positions default to the zero (less-refined) side. Use "_" as a
+; placeholder to skip a position and accept its default.
+
+variable-declaration
+    ::= typed-declaration
+    |   var-declaration
+
+typed-declaration
+    ::= type-specifier IDENTIFIER [ UGLY-MASK ] [ arena-qualifier ]
+        [ ( "=" | ":=" ) expression ] ";"
+
+var-declaration
+    ::= "var" IDENTIFIER [ UGLY-MASK ] [ arena-qualifier ]
+        [ ( "=" | ":=" ) expression ] ";"
+
+arena-qualifier
+    ::= ":" IDENTIFIER
+
+
+; ===========================================================================
+; REFINEMENT QUALIFIERS
+; ===========================================================================
+
+; Minimum refinement qualifiers constrain what the compiler must assume
+; about a variable or parameter — the floor below which morphing cannot go.
+; Maximum refinement qualifiers (ugly mask) cap the ceiling.
+;
+; Bit layout, position 7 down to 0:
+;   7: immutable(i) | mutable(m)
+;   6: fixed(f)     | resizable(r)
+;   5: materialized(m) | virtual(v)
+;   4: raw(r)       | arc(a)
+;   3: homogenous(h)| heterogenous(e)
+;   2: rigid(r)     | fluid(f)
+;   1: serial(s)    | concurrent(c)
+;   0: singular(s)  | variant(v)
+;
+; Shared letters are disambiguated purely by their position in the mask string.
+
+min-refinement-qualifier
+    ::= "mutable"
+    |   "resizable"
+    |   "virtual"
+    |   "arc"
+    |   "heterogenous"
+    |   "fluid"
+    |   "concurrent"
+    |   "variant"
+    |   "*"         ; shorthand for virtual (raw or arc pointer)
+    |   "&"         ; shorthand for arc pointer
+
+max-refinement-qualifier
+    ::= "immutable"
+    |   "fixed"
+    |   "materialized"
+    |   "raw"
+    |   "homogenous"
+    |   "rigid"
+    |   "serial"
+    |   "singular"
+
+
+; ===========================================================================
+; ARENA DECLARATIONS
+; ===========================================================================
+
+arena-declaration
+    ::= "arena" IDENTIFIER [ "(" expression ")" ] ";"
+
+
+; ===========================================================================
+; TYPE SPECIFIERS
+; ===========================================================================
+
+type-specifier
+    ::= [ min-refinement-qualifier ] base-type
+    |   [ min-refinement-qualifier ] qualified-name
+    |   "var"
+
+base-type
+    ::= "b"
+    |   "i8" | "i16" | "i32" | "i64"
+    |   "u8" | "u16" | "u32" | "u64"
+    |   "f32" | "f64"
+    |   "d16" | "d32" | "d64"
+    |   "c8" | "c16"
+    |   "zs8" | "zs16" | "zs32"
+    |   "s8" | "s16"
+    |   "utf8" | "us"
+    |   container-type
+    |   "function"
+    |   "arena"
+    |   "heap"
+
+container-type
+    ::= "list"
+    |   "queue"
+    |   "stack"
+    |   "btree"
+    |   "hashset"
+    |   "hashmap"
+    |   "spsc_queue"
+    |   "spmc_queue"
+    |   "mpsc_queue"
+    |   "mpmc_queue"
+
+
+; ===========================================================================
+; FUNCTIONS
+; ===========================================================================
+
+; A function with no return type specifier is a procedure (returns nothing).
+; A function containing a "yield" statement is a generator; the return type
+; names the yielded element type. The compiler-internal generator wrapper
+; type is __Generator and is never written by the programmer.
+; A function whose parameter types are all unresolved within its own scope
+; is inlined at each call site where types are resolved from context.
+
+function-declaration
+    ::= [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
+    |   [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" ";"
+
+parameter-list
+    ::= parameter { "," parameter } [ "," variadic-parameter ]
+    |   variadic-parameter
+
+; A parameter with no type specifier is implicitly var.
+parameter
+    ::= [ type-specifier ] IDENTIFIER [ UGLY-MASK ] [ "=" expression ]
+    |   IDENTIFIER [ UGLY-MASK ] [ "=" expression ]
+
+variadic-parameter
+    ::= IDENTIFIER "..."
+
+function-body
+    ::= "{" { statement } "}"
+
+anonymous-function
+    ::= "(" [ parameter-list ] ")" "{" { statement } "}"
+    ; Capture is inferred from usage. Value vs reference capture depends on
+    ; the refined type of each captured variable.
+
+nested-function-declaration
+    ::= function-declaration
+    ; Functions may be nested inside other functions.
+    ; Reaching into a nested function from its enclosing scope is not permitted.
+
+
+; ===========================================================================
+; EXTERN DECLARATIONS
+; ===========================================================================
+
+extern-declaration
+    ::= "extern" IDENTIFIER "." IDENTIFIER "(" [ extern-parameter-list ] ")"
+        [ "->" type-specifier ":" IDENTIFIER ] ";"
+    ; The first IDENTIFIER is the library name, the second is the function name.
+    ; The trailing ":" IDENTIFIER after the return type names the return register.
+
+extern-parameter-list
+    ::= extern-parameter { "," extern-parameter }
+
+extern-parameter
+    ::= IDENTIFIER ":" type-specifier [ "->" IDENTIFIER ]
+    ; The trailing IDENTIFIER names the register (rcx, rdx, r8, r9, etc.).
+    ; Parameters without a register name are passed on the stack.
+
+
+; ===========================================================================
+; STRUCT DECLARATIONS
+; ===========================================================================
+
+; Structs have no function members but may have named function pointer members.
+; A compiler-generated default constructor accepts parameters matching the
+; member list in declaration order.
+
+struct-declaration
+    ::= "struct" [ IDENTIFIER ] "{" { struct-member } "}" [ IDENTIFIER ] ";"
+
+struct-member
+    ::= type-specifier IDENTIFIER [ UGLY-MASK ] [ "=" expression ] ";"
+
+
+; ===========================================================================
+; CLASS DECLARATIONS
+; ===========================================================================
+
+class-declaration
+    ::= "class" IDENTIFIER [ ":" base-class-list ] "{" { class-member } "}"
+
+base-class-list
+    ::= qualified-name { "," qualified-name }
+
+class-member
+    ::= function-declaration
+    |   struct-member
+    |   constructor-declaration
+    |   destructor-declaration
+
+constructor-declaration
+    ::= IDENTIFIER "(" [ parameter-list ] ")" function-body
+
+destructor-declaration
+    ::= "~" IDENTIFIER function-body
+
+
+; ===========================================================================
+; ERROR DECLARATIONS
+; ===========================================================================
+
+; Declares a class with an inferred constructor and a functor, inheriting from
+; the built-in XmcError base. Parameters are automatically forwarded to members
+; of the same name and type.
+
+error-declaration
+    ::= "error" IDENTIFIER "(" [ parameter-list ] ")" ";"
+
+
+; ===========================================================================
+; STATEMENTS
+; ===========================================================================
+
+statement
+    ::= variable-declaration
+    |   arena-declaration
+    |   nested-function-declaration
+    |   expression-statement
+    |   assignment-statement
+    |   return-statement
+    |   yield-statement
+    |   break-statement
+    |   if-statement
+    |   for-statement
+    |   while-statement
+    |   do-statement
+    |   spawn-statement
+    |   labeled-block
+    |   error-block
+    |   block
+
+block
+    ::= "{" { statement } "}"
+
+expression-statement
+    ::= expression ";"
+
+assignment-statement
+    ::= lvalue "=" expression ";"
+    |   lvalue ":=" expression ";"
+    |   lvalue compound-assign-op expression ";"
+
+compound-assign-op
+    ::= "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
+
+; lvalue covers simple names, member access, and subscript.
+; The "." in lvalue is always member access because the leftmost identifier
+; must resolve as a value for an assignment target to be valid.
+lvalue
+    ::= IDENTIFIER { "." IDENTIFIER | "[" expression "]" }
+
+return-statement
+    ::= "return" [ expression ] ";"
+
+yield-statement
+    ::= "yield" expression ";"
+
+break-statement
+    ::= "break" [ ":" IDENTIFIER ] ";"
+
+
+; ===========================================================================
+; CONTROL FLOW
+; ===========================================================================
+
+if-statement
+    ::= "if" "(" expression ")" statement
+        { "else" "if" "(" expression ")" statement }
+        [ "else" statement ]
+
+for-statement
+    ::= "for" "(" for-init ";" [ expression ] ";" [ expression ] ")" statement
+    |   "for" "(" [ type-specifier ] IDENTIFIER "in" expression ")" statement
+
+for-init
+    ::= variable-declaration
+    |   expression-statement
+    |   type-specifier IDENTIFIER "=" expression
+
+while-statement
+    ::= "while" "(" expression ")" statement
+
+do-statement
+    ::= "do" statement "while" "(" expression ")" ";"
+
+
+; ===========================================================================
+; LABELED BLOCKS AND REACHING
+; ===========================================================================
+
+; A labeled block creates a named scope. The label acts as a local namespace
+; within the enclosing function. It may shadow a global namespace of the same
+; name within that function. Variables declared inside the block are reachable
+; in the enclosing function scope after the block exits; if the block was
+; skipped at runtime, those variables are null. Reaching does not cross
+; function boundaries — you cannot reach into a nested function.
+
+labeled-block
+    ::= "{" ":" IDENTIFIER { statement } "}"
+
+
+; ===========================================================================
+; SPAWN / THREADING
+; ===========================================================================
+
+spawn-statement
+    ::= [ ( "var" | type-specifier ) IDENTIFIER "=" ] "spawn"
+        ( function-call | anonymous-block ) ";"
+
+anonymous-block
+    ::= "{" { statement } "}"
+
+
+; ===========================================================================
+; ERROR HANDLING
+; ===========================================================================
+
+; Error block: if any expression inside produces a variant whose tag inherits
+; from XmcError, execution immediately exits the block.
+error-block
+    ::= "{?" { statement } "?}"
+
+; Error operator: used as an expression. If the left side is an error variant,
+; the handler block runs. See error-expression in the expression grammar.
+
+
+; ===========================================================================
+; EXPRESSIONS
+; ===========================================================================
+
+; Precedence follows C++ conventions, encoded via recursive nesting.
+; The ternary operator (?:) is excluded — use inline if/else instead.
+
+expression
+    ::= error-expression
+
+error-expression
+    ::= conditional-expr [ "|" "{" { statement } "}" ]
+    ; The "|" error operator binds loosely, below all other operators.
+
+; Inline conditional expression replacing the ternary operator.
+; "if" condition "then" true-expr "else" false-expr
+conditional-expr
+    ::= "if" expression "then" expression "else" expression
+    |   logical-or-expr
+
+logical-or-expr
+    ::= logical-and-expr { "||" logical-and-expr }
+
+logical-and-expr
+    ::= bitwise-or-expr { "&&" bitwise-or-expr }
+
+bitwise-or-expr
+    ::= bitwise-xor-expr { "|" bitwise-xor-expr }
+
+bitwise-xor-expr
+    ::= bitwise-and-expr { "^" bitwise-and-expr }
+
+bitwise-and-expr
+    ::= equality-expr { "&" equality-expr }
+
+equality-expr
+    ::= relational-expr { ( "==" | "!=" ) relational-expr }
+
+relational-expr
+    ::= shift-expr { ( "<" | ">" | "<=" | ">=" ) shift-expr }
+
+shift-expr
+    ::= additive-expr { ( "<<" | ">>" ) additive-expr }
+
+additive-expr
+    ::= multiplicative-expr { ( "+" | "-" ) multiplicative-expr }
+
+multiplicative-expr
+    ::= unary-expr { ( "*" | "/" | "%" ) unary-expr }
+
+unary-expr
+    ::= postfix-expr
+    |   "-"  unary-expr
+    |   "!"  unary-expr
+    |   "~"  unary-expr
+    |   "++" unary-expr
+    |   "--" unary-expr
+
+postfix-expr
+    ::= primary-expr { postfix-op }
+
+postfix-op
+    ::= "." IDENTIFIER                              ; member access (or namespace step — see header note)
+    |   "[" expression "]"                          ; subscript
+    |   "[" [ expression ] ":" [ expression ] "]"   ; slice
+    |   "(" [ argument-list ] ")"                   ; call
+    |   "++"
+    |   "--"
+    |   "is" type-specifier                         ; type test
+
+primary-expr
+    ::= literal
+    |   IDENTIFIER
+    |   "me"
+    |   "null"
+    |   "(" expression ")"
+    |   anonymous-function
+    |   list-expr
+    |   dict-expr
+    |   list-comprehension
+    |   range-expression
+
+
+; ===========================================================================
+; STRUCT INITIALIZATION EXPRESSIONS
+; ===========================================================================
+
+; Square brackets initialize struct members positionally.
+; Curly braces initialize struct members by name (key must be an IDENTIFIER).
+; When the assignment target type is never resolved:
+;   square brackets -> list
+;   curly braces   -> hashmap
+
+list-expr
+    ::= "[" [ expression { "," expression } ] "]"
+
+dict-expr
+    ::= "{" [ dict-entry { "," dict-entry } ] "}"
+
+dict-entry
+    ::= expression ":" expression
+
+
+; ===========================================================================
+; FUNCTION CALLS AND ARGUMENTS
+; ===========================================================================
+
+function-call
+    ::= qualified-name "(" [ argument-list ] ")"
+
+argument-list
+    ::= argument { "," argument }
+
+; Arguments may be positional or named. Named arguments allow left-side
+; omission. Positional arguments may follow named ones when position is
+; still unambiguous given which parameters have been named.
+argument
+    ::= [ IDENTIFIER "=" ] expression
+    |   list-expr       ; positional struct initializer passed directly
+    |   dict-expr       ; named struct initializer passed directly
+
+
+; ===========================================================================
+; COMPREHENSIONS AND RANGES
+; ===========================================================================
+
+list-comprehension
+    ::= "[" expression "for" [ type-specifier ] IDENTIFIER "in" expression
+        [ "if" expression ] "]"
+
+range-expression
+    ::= "range" "(" expression [ "," expression ] ")"
+
+
+; ===========================================================================
+; LITERALS
+; ===========================================================================
+
+literal
+    ::= INTEGER-LITERAL
+    |   FLOAT-LITERAL
+    |   DECIMAL-LITERAL
+    |   STRING-LITERAL
+    |   CHAR-LITERAL
+    |   BOOL-LITERAL
+
+BOOL-LITERAL ::= "true" | "false"
+
+
+; ===========================================================================
+; TOKENS (Lexer)
+; ===========================================================================
+
+KEYWORD
+    ::= "var" | "namespace"
+    |   "mutable" | "resizable" | "virtual" | "arc"
+    |   "heterogenous" | "fluid" | "concurrent" | "variant"
+    |   "immutable" | "fixed" | "materialized" | "raw"
+    |   "homogenous" | "rigid" | "serial" | "singular"
+    |   "struct" | "class" | "error" | "extern" | "weak"
+    |   "arena" | "heap" | "function"
+    |   "null" | "me" | "is" | "true" | "false"
+    |   "if" | "then" | "else" | "for" | "while" | "do" | "in"
+    |   "return" | "yield" | "break" | "spawn"
+    |   "b"
+    |   "i8"  | "i16" | "i32" | "i64"
+    |   "u8"  | "u16" | "u32" | "u64"
+    |   "f32" | "f64"
+    |   "d16" | "d32" | "d64"
+    |   "c8"  | "c16"
+    |   "zs8" | "zs16" | "zs32"
+    |   "s8"  | "s16"
+    |   "utf8" | "us"
+    |   "list"  | "queue" | "stack" | "btree" | "hashset" | "hashmap"
+    |   "spsc_queue" | "spmc_queue" | "mpsc_queue" | "mpmc_queue"
+    |   "range"
+
+IDENTIFIER
+    ::= LETTER { LETTER | DIGIT | "_" }
+    ;   Must not match a KEYWORD.
+
+; ":=" is always lexed as a single two-character token.
+; ":" alone is only valid as an arena qualifier inside a declaration.
+; "." is lexed as a single-character token; the parser determines whether
+; it is a namespace separator or member access operator from context.
+
+; Ugly mask: immediately follows a variable or parameter name with no
+; intervening whitespace. Tilde followed by 1-8 positional letters or
+; underscores. Letters correspond to bit positions 7..0 left to right.
+; "_" means "accept default at this position" (zero / less-refined side).
+;
+;   Position:  7    6    5    4    3    2    1    0
+;   Zero side: i    f    m    r    h    r    s    s
+;   One side:  m    r    v    a    e    f    c    v
+;
+; Examples:
+;   var myvar~ifmrhrss;     all positions explicitly set to zero side (fully minimal)
+;   var myvar~mrva;         bits 7-4 = mutable/resizable/virtual/arc; bits 3-0 default to zero
+;   var myvar~____c;        only bit 1 constrained to concurrent; all others default
+
+UGLY-MASK
+    ::= "~" MASK-CHAR { MASK-CHAR }
+    ;   1 to 8 characters, no whitespace.
+
+MASK-CHAR
+    ::= "i" | "m" | "f" | "r" | "v" | "a" | "h" | "e" | "s" | "c" | "_"
+
+INTEGER-LITERAL
+    ::= DIGIT { DIGIT }
+    |   "0x" HEX-DIGIT { HEX-DIGIT }
+    |   "0b" BIN-DIGIT { BIN-DIGIT }
+
+FLOAT-LITERAL
+    ::= DIGIT { DIGIT } "." { DIGIT }
+        [ ( "e" | "E" ) [ "+" | "-" ] DIGIT { DIGIT } ]
+
+; Decimal literals use a "d" suffix. No floating point representation is used.
+DECIMAL-LITERAL
+    ::= DIGIT { DIGIT } "." DIGIT { DIGIT } "d"
+
+; String literals support interpolation: {identifier} or {identifier.member}
+STRING-LITERAL
+    ::= '"' { STRING-CHAR | STRING-INTERPOLATION } '"'
+
+STRING-INTERPOLATION
+    ::= "{" IDENTIFIER [ "." IDENTIFIER ] "}"
+    ; Deeper paths and arbitrary expressions inside interpolation are not yet specified.
+
+CHAR-LITERAL
+    ::= "'" CHAR-CHAR "'"
+
+LETTER      ::= "a".."z" | "A".."Z" | "_"
+DIGIT       ::= "0".."9"
+HEX-DIGIT   ::= DIGIT | "a".."f" | "A".."F"
+BIN-DIGIT   ::= "0" | "1"
+STRING-CHAR ::= any character except '"' and '{', or an escape sequence
+CHAR-CHAR   ::= any character except "'", or an escape sequence
+
+LINE-COMMENT  ::= "//" { any character except newline }
+BLOCK-COMMENT ::= "/*" { any character } "*/"
+
+
+; ===========================================================================
+; OPEN QUESTIONS (Revision 3 residuals)
+; ===========================================================================
+
+; [A] INLINE CONDITIONAL SYNTAX
+;     The ternary operator is replaced with:
+;       if condition then true-expr else false-expr
+;     This reads naturally but "then" and "else" are now keywords, and "else"
+;     must be distinguishable from the else-clause of an if-statement. Since
+;     the inline conditional only appears inside an expression context (not as
+;     a statement opener), the parser can disambiguate. Confirm "then" as a
+;     reserved keyword is acceptable.
+
+; [B] DOT DISAMBIGUATION EDGE CASES
+;     The rule "leftmost identifier resolves as a value -> member access,
+;     resolves as a namespace -> namespace path" requires the symbol table
+;     to be populated before or during parsing. For a single-pass parser this
+;     means forward references to namespaces must be handled. Since all
+;     namespace declarations must use the "namespace" keyword, the parser can
+;     pre-scan for namespace names before resolving dotted expressions.
+
+; [C] FULLY TYPELESS PARAMETERS AND INLINING
+;     A function like Swap(a, b) with no type annotations must be inlined at
+;     every call site. The compiler should detect this automatically. Recursive
+;     typeless functions are an error. No grammar change needed.
+
+; [D] STRUCT MEMBER FUNCTION POINTERS
+;     Structs may have named function pointer members. Whether a full function
+;     signature is specifiable inline in the struct body (beyond just
+;     "function myCallback;") needs to be defined.
+
+; [E] STRING INTERPOLATION DEPTH
+;     Currently {identifier} and {identifier.member} are specified.
+;     Whether arbitrary expressions are allowed inside interpolation braces
+;     (e.g. {a + b} or {myFunc()}) needs a decision.
+
+; [F] ERROR OPERATOR CONFLICT WITH BITWISE OR
+;     The error operator uses "|" as its token:
+;       expression | { handler }
+;     This conflicts with bitwise-or-expr which also uses "|".
+;     The parser can disambiguate because the error handler must be a "{" block,
+;     while a bitwise OR right operand cannot start with "{". Confirm this is
+;     a sufficient rule and document it explicitly.
