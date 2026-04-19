@@ -1,12 +1,14 @@
-; xmc Language Grammar (Tentative BNF, Revision 3)
+; xmc Language Grammar (Tentative BNF, Revision 4)
 ; ==================================================
 ; Notation:
 ;   ::=         definition
-;   |           alternation
+;   |           alternate
 ;   { }         zero or more repetitions
 ;   [ ]         zero or one (optional)
 ;   ( )         grouping
 ;   "x"         literal terminal
+;   < >         whitespace is not allowed between groups of items surrounded by angle brackets
+;               (whitepsace is allowed before and after such groups)
 ;   UPPER       lexer token (defined in the Tokens section at the bottom)
 ;
 ; Namespace separator: "."  (same character as member access operator)
@@ -20,10 +22,8 @@
 ; ":" is used only as:
 ;   - The first character of ":=" (reference assignment, a single two-character token)
 ;   - Arena qualifier in a declaration: var x:arenaname
-; The ternary operator is excluded from xmc to avoid ambiguity with these uses of ":".
-; Conditional expressions use if/else syntax instead (see conditional-expr below).
-
-
+;   - Inheritance indicator when declaring structs and classes
+;
 ; ===========================================================================
 ; TOP LEVEL
 ; ===========================================================================
@@ -40,7 +40,7 @@ top-level-declaration
     |   error-declaration
     |   variable-declaration
     |   arena-declaration
-
+    |   nested-scope
 
 ; ===========================================================================
 ; NAMESPACES
@@ -54,7 +54,6 @@ top-level-declaration
 namespace-declaration
     ::= "namespace" IDENTIFIER "{" { top-level-declaration } "}"
 
-
 ; ===========================================================================
 ; QUALIFIED NAMES (namespace paths and member access)
 ; ===========================================================================
@@ -62,44 +61,32 @@ namespace-declaration
 ; "." serves as both namespace path separator and member access operator.
 ; Disambiguation is by symbol table context at parse/resolve time:
 ;   identifier segments that name namespaces are namespace path components;
-;   the first segment that names a value switches to member access.
+;   the first segment that names a non-namespace symbol switches to member access.
 ; The full path only needs to be specified when there is ambiguity;
 ; the shortest unambiguous prefix is sufficient.
+; Namespace paths have an optionally-specified first segment which is the filename
+; the symbol is declared in.
 
 qualified-name
     ::= IDENTIFIER { "." IDENTIFIER }
 
-
 ; ===========================================================================
 ; VARIABLE DECLARATIONS
 ; ===========================================================================
-
-; A ":" after the variable name (with no preceding expression) is the arena
-; qualifier. This is only syntactically valid when the declaration begins with
-; an explicit type keyword or "var". Without one of those, "name.something"
-; is parsed as a qualified reference (member access or namespace path),
-; not a declaration.
 ;
+; A ":" after a variable name in a variable, class or struct member declaration 
+; followed by an arena or a heap name indicates that that variable is to be stored
+; in that arena or heap.
+; 
 ; The ugly mask (refinement ceiling) immediately follows the variable name
 ; with no whitespace, using "~" and 1-8 positional letters. Unspecified
 ; trailing positions default to the zero (less-refined) side. Use "_" as a
 ; placeholder to skip a position and accept its default.
+; 
 
 variable-declaration
-    ::= typed-declaration
-    |   var-declaration
-
-typed-declaration
-    ::= type-specifier IDENTIFIER [ UGLY-MASK ] [ arena-qualifier ]
-        [ ( "=" | ":=" ) expression ] ";"
-
-var-declaration
-    ::= "var" IDENTIFIER [ UGLY-MASK ] [ arena-qualifier ]
-        [ ( "=" | ":=" ) expression ] ";"
-
-arena-qualifier
-    ::= ":" IDENTIFIER
-
+    ::= { low-refinement-qualifier } ( [ "var" ] | type-specifier <IDENTIFIER>) [ <UGLY-MASK> ] [ ":" vault-specifier ]
+        [ ( "=" expression | ":=" lvalue-expression ) ] ";"
 
 ; ===========================================================================
 ; REFINEMENT QUALIFIERS
@@ -121,19 +108,7 @@ arena-qualifier
 ;
 ; Shared letters are disambiguated purely by their position in the mask string.
 
-min-refinement-qualifier
-    ::= "mutable"
-    |   "resizable"
-    |   "virtual"
-    |   "arc"
-    |   "heterogenous"
-    |   "fluid"
-    |   "concurrent"
-    |   "variant"
-    |   "*"         ; shorthand for virtual (raw or arc pointer)
-    |   "&"         ; shorthand for arc pointer
-
-max-refinement-qualifier
+low-refinement-qualifier
     ::= "immutable"
     |   "fixed"
     |   "materialized"
@@ -142,6 +117,20 @@ max-refinement-qualifier
     |   "rigid"
     |   "serial"
     |   "singular"
+
+high-refinement-qualifier   ; at least one space is required after the qualifer
+    ::= "mutable "
+    |   "resizable "
+    |   "virtual "
+    |   "arc "
+    |   "heterogenous "
+    |   "fluid "
+    |   "concurrent "
+    |   "variant "
+
+short-refinement-qualifier  ; no space allowed between the qualifier and the type
+    |   "*"         ; shorthand for virtual (raw or arc pointer)
+    |   "&"         ; shorthand for arc pointer
 
 
 ; ===========================================================================
@@ -156,8 +145,11 @@ arena-declaration
 ; TYPE SPECIFIERS
 ; ===========================================================================
 
-type-specifier
-    ::= [ min-refinement-qualifier ] base-type
+variable-type-specifier
+
+
+parameter-type-specifier
+    ::= { high-refinement-qualifier } base-type
     |   [ min-refinement-qualifier ] qualified-name
     |   "var"
 
@@ -196,25 +188,28 @@ container-type
 ; A function with no return type specifier is a procedure (returns nothing).
 ; A function containing a "yield" statement is a generator; the return type
 ; names the yielded element type. The compiler-internal generator wrapper
-; type is __Generator and is never written by the programmer.
-; A function whose parameter types are all unresolved within its own scope
-; is inlined at each call site where types are resolved from context.
+; type is __Generator and is not referenced by name in code by the programmer.
+; A function with parameters or locals whose types are not resolved within 
+; its scope inlined at each call site where types are resolved from the context.
+; If they remain unresolved by the end of compilation, an error is thrown.
 
 function-declaration
     ::= [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
-    |   [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" ";"
 
 parameter-list
-    ::= parameter { "," parameter } [ "," variadic-parameter ]
-    |   variadic-parameter
+    ::= [ parameter { "," parameter } ] [ parameter-with-default { "," parameter-with-default } ] [ "," variadic-parameter ]
+        | variadic-parameter
 
 ; A parameter with no type specifier is implicitly var.
+
 parameter
-    ::= [ type-specifier ] IDENTIFIER [ UGLY-MASK ] [ "=" expression ]
-    |   IDENTIFIER [ UGLY-MASK ] [ "=" expression ]
+    ::= { high-refinement-qualifier } [ type-specifier ] <IDENTIFIER> [ <UGLY-MASK> ] 
+
+parameter-with-default
+    ::= { high-refinement-qualifier } [ type-specifier ] <IDENTIFIER> [ <UGLY-MASK> ] "=" expression
 
 variadic-parameter
-    ::= IDENTIFIER "..."
+    ::= <IDENTIFIER> <"...">
 
 function-body
     ::= "{" { statement } "}"
@@ -598,7 +593,7 @@ IDENTIFIER
     ;   Must not match a KEYWORD.
 
 ; ":=" is always lexed as a single two-character token.
-; ":" alone is only valid as an arena qualifier inside a declaration.
+; ":" alone is only valid as an arena qualifier inside a declaration or as an indicator of inheritance.
 ; "." is lexed as a single-character token; the parser determines whether
 ; it is a namespace separator or member access operator from context.
 
@@ -656,48 +651,3 @@ CHAR-CHAR   ::= any character except "'", or an escape sequence
 
 LINE-COMMENT  ::= "//" { any character except newline }
 BLOCK-COMMENT ::= "/*" { any character } "*/"
-
-
-; ===========================================================================
-; OPEN QUESTIONS (Revision 3 residuals)
-; ===========================================================================
-
-; [A] INLINE CONDITIONAL SYNTAX
-;     The ternary operator is replaced with:
-;       if condition then true-expr else false-expr
-;     This reads naturally but "then" and "else" are now keywords, and "else"
-;     must be distinguishable from the else-clause of an if-statement. Since
-;     the inline conditional only appears inside an expression context (not as
-;     a statement opener), the parser can disambiguate. Confirm "then" as a
-;     reserved keyword is acceptable.
-
-; [B] DOT DISAMBIGUATION EDGE CASES
-;     The rule "leftmost identifier resolves as a value -> member access,
-;     resolves as a namespace -> namespace path" requires the symbol table
-;     to be populated before or during parsing. For a single-pass parser this
-;     means forward references to namespaces must be handled. Since all
-;     namespace declarations must use the "namespace" keyword, the parser can
-;     pre-scan for namespace names before resolving dotted expressions.
-
-; [C] FULLY TYPELESS PARAMETERS AND INLINING
-;     A function like Swap(a, b) with no type annotations must be inlined at
-;     every call site. The compiler should detect this automatically. Recursive
-;     typeless functions are an error. No grammar change needed.
-
-; [D] STRUCT MEMBER FUNCTION POINTERS
-;     Structs may have named function pointer members. Whether a full function
-;     signature is specifiable inline in the struct body (beyond just
-;     "function myCallback;") needs to be defined.
-
-; [E] STRING INTERPOLATION DEPTH
-;     Currently {identifier} and {identifier.member} are specified.
-;     Whether arbitrary expressions are allowed inside interpolation braces
-;     (e.g. {a + b} or {myFunc()}) needs a decision.
-
-; [F] ERROR OPERATOR CONFLICT WITH BITWISE OR
-;     The error operator uses "|" as its token:
-;       expression | { handler }
-;     This conflicts with bitwise-or-expr which also uses "|".
-;     The parser can disambiguate because the error handler must be a "{" block,
-;     while a bitwise OR right operand cannot start with "{". Confirm this is
-;     a sufficient rule and document it explicitly.
