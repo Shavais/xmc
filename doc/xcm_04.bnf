@@ -74,7 +74,7 @@ class-member
       | function-member
 
 data-member
-    ::= variable-type-specifier IDENTIFIER [ UGLY-MASK ] [ "=" expression ] ";"
+    ::= type-specifier <IDENTIFIER> [ UGLY-MASK ] [ "=" expression ] ";"
 
 constructor-declaration
     ::= IDENTIFIER "(" [ parameter-list ] ")" function-body
@@ -85,20 +85,22 @@ destructor-declaration
 ; function-body is defined under "FUNCTIONS" below.
 
 function-member
-    ::= [ variable-type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
+    ::= [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
 
 ;----------------------------------------------------------------------------
 ; TYPE SPECIFIERS
 ;----------------------------------------------------------------------------
 
-variable-type-specifier
+type-specifier
     ::= { low-refinement-qualifier } base-type
       | [ low-refinement-qualifier ] qualified-name
+      | ptr-type
       | "var"
 
 parameter-type-specifier
-    ::= { high-refinement-qualifier } [ <short-refinement-qualifier> ] <base-type>
-      | { high-refinement-qualifier } [ <short-refinement-qualifier> ] <qualified-name>
+    ::= { high-refinement-qualifier } base-type
+      | { high-refinement-qualifier } qualified-name
+      | ptr-type
       | "var"
 
 base-type
@@ -169,9 +171,12 @@ high-refinement-qualifier    ; at least one space is required after the qualifie
       | "concurrent "
       | "variant "
 
-short-refinement-qualifier   ; no space allowed between the qualifier and the type
-      | "*"                  ; shorthand for virtual (raw or arc pointer)
-      | "&"                  ; shorthand for arc pointer
+; pointer constructors..
+
+ptr-type
+    ::= <"*"> <type-specifier>    ; raw pointer
+      | <"&"> <type-specifier>    ; arc pointer
+      | ptr-type type-specifier   ; pointer to pointer, e.g. **Node, *&Node
 
 ;============================================================================
 ; ERROR DECLARATIONS
@@ -227,6 +232,12 @@ parameter-list
       | variadic-parameter
 
 ; A parameter with no type specifier is implicitly var.
+;
+; Parameters declared with ptr-type (**Node, *&Node, etc.) are explicit
+; pointer parameters. They do not participate in refinement morphing.
+; The compiler does not infer or adjust their pointer depth.
+; raw and ref qualifiers on non-ptr-type parameters continue to set
+; minimum refinement floors as before.
 
 parameter
     ::= { high-refinement-qualifier } [ type-specifier ] <IDENTIFIER> [ <UGLY-MASK> ]
@@ -342,6 +353,11 @@ error-block
 ;============================================================================
 ; ASSIGNMENT AND SIMPLE STATEMENTS
 ;============================================================================
+;
+; "$" on the left side of an assignment dereferences the pointer and
+; writes through it. "$pp = x" writes x to the location pp points at.
+; "$pp->field = x" dereferences pp and writes to field.
+; Compound assignment through a pointer is also valid: "$pp += 1"
 
 assignment-statement
     ::= lvalue "=" expression ";"
@@ -446,11 +462,24 @@ relational-expr
 shift-expr
     ::= additive-expr { ( "<<" | ">>" ) additive-expr }
 
+; Pointer arithmetic:
+;   *T + u64  ->  *T    (offset pointer forward)
+;   *T - u64  ->  *T    (offset pointer backward)
+;   *T - *T   ->  u64   (distance between two pointers of the same type)
+; All other arithmetic on pointer types is a compile-time error.
+; The subscript operator [n] on a *T is equivalent to (*T + n) dereferenced,
+; and is the preferred idiom for pointer-offset access.
+
 additive-expr
     ::= multiplicative-expr { ( "+" | "-" ) multiplicative-expr }
 
 multiplicative-expr
     ::= unary-expr { ( "*" | "/" | "%" ) unary-expr }
+
+; Precedence note:
+;   "$" binds tighter than "->", so $pp->next parses as ($pp)->next.
+;   "@" binds looser than "->", so @pp->next parses as @(pp->next).
+;   "@haystack[i] parses as @(haystack[i]), yielding a *T into the buffer.
 
 unary-expr
     ::= postfix-expr
@@ -459,18 +488,21 @@ unary-expr
       | "~"  unary-expr
       | "++" unary-expr
       | "--" unary-expr
+      | "@" unary-expr        ; address-of: yields ptr-type one level deeper
+      | "$" unary-expr        ; dereference: yields the value pointed at
 
 postfix-expr
     ::= primary-expr { postfix-op }
 
 postfix-op
-    ::= "." IDENTIFIER                        ; member access (or namespace step — see header note)
-      | "[" expression "]"                    ; subscript
-      | "[" [ expression ] ":" [ expression ] "]"  ; slice
-      | "(" [ argument-list ] ")"             ; call
-      | "++"
-      | "--"
-      | "is" type-specifier                   ; type test
+    ::= "." IDENTIFIER
+    | "->" IDENTIFIER       ; dereference and access member
+    | "[" expression "]"
+    | "[" [ expression ] ":" [ expression ] "]"
+    | "(" [ argument-list ] ")"
+    | "++"
+    | "--"
+    | "is" type-specifier
 
 primary-expr
     ::= literal
@@ -574,6 +606,16 @@ KEYWORD
       | "list"  | "queue" | "stack"     | "btree" | "hashset" | "hashmap"
       | "spsc_queue" | "spmc_queue" | "mpsc_queue" | "mpmc_queue"
       | "range"
+      | "@"   address-of operator
+      | "$"   dereference operator
+      | "->"  pointer member access operator
+
+; "*" and "&" are context-sensitive:
+;   In a type position -> ptr-type constructors (*T, &T)
+;   In an expression -> multiplication (*) and bitwise-and (&) as before
+; "@" -> address-of operator (unary prefix)
+; "$" -> dereference operator (unary prefix)
+; "->" -> pointer member access operator (postfix)
 
 IDENTIFIER
     ::= LETTER { LETTER | DIGIT | "_" }
@@ -675,6 +717,19 @@ variable-declaration
     ::= { low-refinement-qualifier } ( [ "var" ] | type-specifier <IDENTIFIER> ) [ <UGLY-MASK> ] [ ":" vault-specifier ]
         [ ( "=" expression | ":=" lvalue-expression ) ] ";"
 
+lvalue-expression
+    ::= lvalue-root { lvalue-postfix }
+
+lvalue-root
+    ::= IDENTIFIER
+    | function-call
+    | "$" unary-expr        ; dereferenced pointer is an addressable location
+    | "(" expression ")"
+
+lvalue-postfix
+    ::= "." IDENTIFIER
+    | "->" IDENTIFIER
+    | "[" expression "]"
 
 ;=============================================================================
 ;END OF BNF SEQUENCE
