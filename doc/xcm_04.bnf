@@ -176,7 +176,6 @@ high-refinement-qualifier    ; at least one space is required after the qualifie
 ptr-type
     ::= <"*"> <type-specifier>    ; raw pointer
       | <"&"> <type-specifier>    ; arc pointer
-      | ptr-type type-specifier   ; pointer to pointer, e.g. **Node, *&Node
 
 ;============================================================================
 ; ERROR DECLARATIONS
@@ -371,9 +370,6 @@ compound-assign-op
 ; The "." in lvalue is always member access because the leftmost identifier
 ; must resolve as a value for an assignment target to be valid.
 
-lvalue
-    ::= IDENTIFIER { "." IDENTIFIER | "[" expression "]" }
-
 return-statement
     ::= "return" [ expression ] ";"
 
@@ -488,15 +484,15 @@ unary-expr
       | "~"  unary-expr
       | "++" unary-expr
       | "--" unary-expr
-      | "@" unary-expr        ; address-of: yields ptr-type one level deeper
-      | "$" unary-expr        ; dereference: yields the value pointed at
+      | <"@"> <unary-expr>        ; address-of: yields ptr-type one level deeper
+      | <"$"> <unary-expr>        ; dereference: yields the value pointed at
 
 postfix-expr
     ::= primary-expr { postfix-op }
 
 postfix-op
     ::= "." IDENTIFIER
-    | "->" IDENTIFIER       ; dereference and access member
+    | <"->"> <IDENTIFIER>         ; dereference and access member
     | "[" expression "]"
     | "[" [ expression ] ":" [ expression ] "]"
     | "(" [ argument-list ] ")"
@@ -606,9 +602,9 @@ KEYWORD
       | "list"  | "queue" | "stack"     | "btree" | "hashset" | "hashmap"
       | "spsc_queue" | "spmc_queue" | "mpsc_queue" | "mpmc_queue"
       | "range"
-      | "@"   address-of operator
-      | "$"   dereference operator
-      | "->"  pointer member access operator
+      | "@"             ; address-of operator
+      | "$"             ; dereference operator
+      | "->"            ; pointer member access operator
 
 ; "*" and "&" are context-sensitive:
 ;   In a type position -> ptr-type constructors (*T, &T)
@@ -728,8 +724,11 @@ lvalue-root
 
 lvalue-postfix
     ::= "." IDENTIFIER
-    | "->" IDENTIFIER
+    | <"->"> <IDENTIFIER>
     | "[" expression "]"
+
+lvalue
+    ::= lvalue-expression   ; semantic checker additionally verifies the result is mutable
 
 ;=============================================================================
 ;END OF BNF SEQUENCE

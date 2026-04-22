@@ -479,7 +479,7 @@ void CallCppFunction3() {
 
 void RunTestPipeline() {
 	using namespace process;
-	string testname = "02_structs";
+	string testname = "03_multi_qualifiers";
 
 	// 1. Manually add our test file to the modified list to force processing
 	data::ModifiedSources.push_back(testname);

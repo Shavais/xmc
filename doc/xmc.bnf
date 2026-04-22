@@ -23,7 +23,8 @@
 ;   - The first character of ":=" (reference assignment, a single two-character token)
 ;   - Arena qualifier in a declaration: var x:arenaname
 ;   - Inheritance indicator when declaring structs and classes
-;
+
+
 ; ===========================================================================
 ; TOP LEVEL
 ; ===========================================================================
@@ -33,19 +34,21 @@ program
 
 top-level-declaration
     ::= namespace-declaration
-    |   function-declaration
-    |   extern-declaration
-    |   struct-declaration
+    |   arena-declaration
     |   class-declaration
     |   error-declaration
-    |   variable-declaration
-    |   arena-declaration
+    |   extern-declaration
+    |   function-declaration
+    |   heap-declaration
     |   nested-scope
+    |   struct-declaration
+    |   variable-declaration
+
 
 ; ===========================================================================
 ; NAMESPACES
 ; ===========================================================================
-
+;
 ; Namespace blocks must begin with the "namespace" keyword.
 ; You cannot declare a symbol into a namespace other than the current one.
 ; "var ns1.varname = x;" is not legal as a declaration.
@@ -54,10 +57,11 @@ top-level-declaration
 namespace-declaration
     ::= "namespace" IDENTIFIER "{" { top-level-declaration } "}"
 
+
 ; ===========================================================================
 ; QUALIFIED NAMES (namespace paths and member access)
 ; ===========================================================================
-
+;
 ; "." serves as both namespace path separator and member access operator.
 ; Disambiguation is by symbol table context at parse/resolve time:
 ;   identifier segments that name namespaces are namespace path components;
@@ -69,6 +73,7 @@ namespace-declaration
 
 qualified-name
     ::= IDENTIFIER { "." IDENTIFIER }
+
 
 ; ===========================================================================
 ; VARIABLE DECLARATIONS
@@ -88,10 +93,11 @@ variable-declaration
     ::= { low-refinement-qualifier } ( [ "var" ] | type-specifier <IDENTIFIER>) [ <UGLY-MASK> ] [ ":" vault-specifier ]
         [ ( "=" expression | ":=" lvalue-expression ) ] ";"
 
+
 ; ===========================================================================
 ; REFINEMENT QUALIFIERS
 ; ===========================================================================
-
+;
 ; Minimum refinement qualifiers constrain what the compiler must assume
 ; about a variable or parameter — the floor below which morphing cannot go.
 ; Maximum refinement qualifiers (ugly mask) cap the ceiling.
@@ -134,23 +140,15 @@ short-refinement-qualifier  ; no space allowed between the qualifier and the typ
 
 
 ; ===========================================================================
-; ARENA DECLARATIONS
+; VARIABLE TYPE SPECIFIERS
 ; ===========================================================================
-
-arena-declaration
-    ::= "arena" IDENTIFIER [ "(" expression ")" ] ";"
-
-
-; ===========================================================================
-; TYPE SPECIFIERS
-; ===========================================================================
+;
+; Type specifiers for variables, struct and class members use low refinement
+; specifiers (like "raw" or "serial") to specify maximum refinements.
 
 variable-type-specifier
-
-
-parameter-type-specifier
-    ::= { high-refinement-qualifier } base-type
-    |   [ min-refinement-qualifier ] qualified-name
+    ::= { low-refinement-qualifier } base-type
+    |   qualified-name
     |   "var"
 
 base-type
@@ -182,16 +180,28 @@ container-type
 
 
 ; ===========================================================================
+; VAULT SPECIFIERS
+; ===========================================================================
+;
+; A vault specifier refers to either an application manage arena or an
+; application managed heap.
+
+vault-specifier
+    ::= IDENTIFIER
+
+
+; ===========================================================================
 ; FUNCTIONS
 ; ===========================================================================
-
+;
 ; A function with no return type specifier is a procedure (returns nothing).
 ; A function containing a "yield" statement is a generator; the return type
 ; names the yielded element type. The compiler-internal generator wrapper
 ; type is __Generator and is not referenced by name in code by the programmer.
 ; A function with parameters or locals whose types are not resolved within 
-; its scope inlined at each call site where types are resolved from the context.
-; If they remain unresolved by the end of compilation, an error is thrown.
+; its scope are inlined at each call site where types are resolved from the 
+; context. If they remain unresolved by the end of compilation session, a 
+; compile time error is emitted.
 
 function-declaration
     ::= [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
@@ -224,6 +234,18 @@ nested-function-declaration
     ; Functions may be nested inside other functions.
     ; Reaching into a nested function from its enclosing scope is not permitted.
 
+
+; ===========================================================================
+; PARAMETER TYPE SPECIFIERS
+; ===========================================================================
+;
+; Type specifiers for function parameters use high refinement specifiers
+; (like "concurrent") to specify minimum refinements.
+
+parameter-type-specifier
+    ::= { high-refinement-qualifier } base-type
+    |   qualified-name
+    |   "var"
 
 ; ===========================================================================
 ; EXTERN DECLARATIONS
@@ -651,3 +673,8 @@ CHAR-CHAR   ::= any character except "'", or an escape sequence
 
 LINE-COMMENT  ::= "//" { any character except newline }
 BLOCK-COMMENT ::= "/*" { any character } "*/"
+
+; ===========================================================================
+; END OF BNF SEQUENCE
+; ===========================================================================
+

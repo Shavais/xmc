@@ -1,0 +1,117 @@
+
+I've written parsers before using a pattern like this:
+
+We have big table of states, tokens and next states, like this:
+
+{state: {tokens: nextstate, ohtertokens: othernextstate, ..}, ...}
+
+We have another big table of state functions, like this:
+
+[state: statefunc(string), ..]
+
+We set the state to the start state, enter a loop like this:
+
+while not EOF:
+	get the next character (into curchar)
+	look up the state
+	iterate over the token sets for the state
+	if curchar is not in any of the token sets, emit an error and break
+	look up the state function for the next state and call it, passing the accumulate string + curchar
+	
+One of the state functions is a "accumulate" call that just adds curchar to the accumulated string.
+Most state functions change the current state and clear the accumulated string.
+Many or most state functions could potentially emit parse nodes.
+
+Do you think a pattern like that would be more or less efficient than what we're doing?
+Do you think it would be easier to create, maintain and debug?
+
+-------------------------------------------
+
+
+
+Here's a tentative plan for the compiler; each of these are a spawned thread per source file:
+
+lexor: 
+	- table driven state machine that posts tokens into a token queue for the parser 
+	- emits syntax errors like "syntax error - file:line - expected one of [_,_,..] got [_]"
+	- logs file:line:token entries into a token log file for a given project when lexor logging is requested
+		(in the project file for the active config).
+	- cleans up and halts if a "full scan required" event is raised
+
+parser (thread per file):
+	- consumes tokens from the token queue
+	- adds symbol and action parse tree nodes to a parse tree
+	- posts newly created parse tree node references into the typer queue
+	- logs lines about created parse tree nodes into a parser log when parser logging is requested
+	- cleans up and halts if a "full scan required" event is raised
+		
+typer:
+	- consumes the typer queue 
+	- builds a type dependency graph with (references to parse tree nodes)
+	- emits typer errors to an oserror stream when immediate typer error conditions arise
+	- discovers type resolutions and updates the types in parse tree nodes
+	- posts typer-processed parse node references to the refiner queue
+	- logs lines about discovered types into a typer log when typer logging is requested
+	- raises a "full scan required" event if type changes impact xmo's (xmc object files) that aren't fully loaded
+	- cleans up and halts if a "full scan required" event is raised
+	
+refiner:
+	- consumes the refiner queue
+	- builds a refinement dependency graph 
+	- streams refinement related errors to an oserror stream when immedaite refinement error conditions arise
+	- discovers required refinements and updates the refinements in parse tree nodes
+	- raises a "full scan required" event if refinement morphs impact xmo's that aren't fully loaded
+	- cleans up and halts if a "full scan required" event is raised
+
+reviewer:
+	- starts when the lexor, parser, typer and refiner have all finished if no "full scan required" event was raised
+	- scans the parse tree for unresolved types and refinements
+	- streams unresolved type and refinement errors to oserror
+	- checks for and performs some parse node level optimizations, when possible and convenient
+	- notifies the coder if reviewing completes without errors
+	
+coder: 
+	- awakens when the reviewer notifies it of successfull completion
+	- walks the parse tree
+	- fills parse node code block id vectors:
+		- looks up a vector of base type block id vectors for the node type, symbol basetype and action 
+		- looks up a vector of refinement block id vectors for the node type, symbol refinement and action
+		- stitches together block id vectors, tracking register usage
+		- chooses alternate block id vectors when the defaults require registers that are in use
+		- performs some block id vector level optimizations, when possible and convenient
+	- notifies the emmitter upon successful completion
+
+emitter: (already implemented and tested.. no intelligence) 
+	- consumes parse node block id vectors and produces machine code in xmo code buffers 
+	- consumes xmo code buffers and produces a COFF file for the project
+	
+
+
+I'm working on a table like this..
+
+{	"statestring", 
+	{	{"encounterstring", "nextstatestring"},		// if whitespace is not to be skipped, 
+		{"encounterstring", "nextstatestring"},		// a "#" is prepended to encounterstring
+	}
+}
+
+which might look like this:
+
+unordered_map<string, vector<pair<vector<string>, string>> NextStates
+	{	"top", 	
+		{	{"arena"}, "arena_identifier1",		
+			{"class"}, "class_identifier1",
+			..
+		},
+		"arenaidentifier1", 
+		{	{"("}, "arenaexpression1",
+		}
+		"",
+		{	{")", "arena3",			
+	}
+
+
+And then I'm imagining creating a code generator that would generate c++ code that declares
+and populates a set of tables that the lexor would actually use that would be faster to use. 
+
+What might those tables look like?

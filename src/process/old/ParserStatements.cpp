@@ -194,8 +194,8 @@ namespace process
 				return ParseFunction(p, scopeStack, node, ctx, arena, firstWord);
 			}
 			else {
-				// It's a typed variable declaration
-				return ParseVariableDeclaration(p, scopeStack, ctx, arena, false);
+				// It's a typed variable declaration, which may have preceding qualifiers, so pass in the first word
+				return ParseVariableDeclaration(p, scopeStack, ctx, arena, false, firstWord);
 			}
 		}
 		else if (firstWord == "var") {
@@ -696,8 +696,8 @@ namespace process
 	// Grammar: [ type-specifier | "var" ] IDENTIFIER [ UGLY-MASK ] [ arena-qualifier ] [ ( "=" | ":=" ) expression ] ";"
 	ParseTreeNode* ParseVariableDeclaration(TextParser& p, std::vector<uint32_t>& scopeStack, const ParseContext& ctx, Arena& arena, bool isExplicitVar, std::string_view inferredType) {
 		SkipWhitespaceAndComments(p);
-
-		string_view word = ParseIdentifier(p);
+			
+		string_view word = (!inferredType.empty())? word = inferredType : ParseIdentifier(p);
 		if (word.empty()) {
 			EmitError(ctx, p.View(), "Type or 'var'", (string)p.View().substr(0, 10));
 			return nullptr;
@@ -728,7 +728,8 @@ namespace process
 		// If a type was already parsed by a parent (like ParseStruct), use it!
 		else if (!inferredType.empty()) {
 			typeSpec = inferredType;
-			ident = word; // The word we extracted was the actual identifier!
+			SkipWhitespaceAndComments(p);
+			ident = ParseIdentifier(p); // The word we extracted was the actual identifier!
 		}
 		// If it's a typed declaration without the 'var' keyword (e.g., `i32 global_speed;`)
 		else if (word != "var" && !IsRefinementQualifier(word)) {

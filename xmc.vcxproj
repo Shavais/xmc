@@ -150,11 +150,11 @@
     <ClCompile Include="src\process\Emitter.cpp" />
     <ClCompile Include="src\process\Linker.cpp" />
     <ClCompile Include="src\process\LoadModifiedSources.cpp" />
-    <ClCompile Include="src\process\Parser.cpp" />
-    <ClCompile Include="src\process\ParserDeclarations.cpp" />
-    <ClCompile Include="src\process\ParserExpressions.cpp" />
-    <ClCompile Include="src\process\ParserFunctions.cpp" />
-    <ClCompile Include="src\process\ParserStatements.cpp" />
+    <ClCompile Include="src\process\old\Parser.cpp" />
+    <ClCompile Include="src\process\old\ParserDeclarations.cpp" />
+    <ClCompile Include="src\process\old\ParserExpressions.cpp" />
+    <ClCompile Include="src\process\old\ParserFunctions.cpp" />
+    <ClCompile Include="src\process\old\ParserStatements.cpp" />
     <ClCompile Include="src\process\ProjectFile.cpp" />
     <ClCompile Include="src\process\Util.cpp" />
     <ClCompile Include="src\process\Xmo.cpp" />
@@ -188,8 +188,8 @@
     <ClInclude Include="src\process\Emitter.h" />
     <ClInclude Include="src\process\Linker.h" />
     <ClInclude Include="src\data\MemoryData.h" />
-    <ClInclude Include="src\process\Parser.h" />
-    <ClInclude Include="src\process\ParserInternal.h" />
+    <ClInclude Include="src\process\old\Parser.h" />
+    <ClInclude Include="src\process\old\ParserInternal.h" />
     <ClInclude Include="src\process\ProjectFile.h" />
     <ClInclude Include="src\process\Util.h" />
     <ClInclude Include="src\stl.h" />
@@ -202,12 +202,14 @@
     <ClInclude Include="src\win32.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="doc\xcm_04.bnf" />
     <None Include="tests\xmdev\extern.xm_" />
     <None Include="tests\xmdev\xmdev.xmc" />
     <None Include="tests\xmdev\Test01.xm_" />
     <None Include="tests\hello\hello.xmc" />
     <None Include="tests\xm\1_Declarations\01_namespace.xm" />
     <None Include="tests\xm\1_Declarations\02_structs.xm" />
+    <None Include="tests\xm\1_Declarations\03_multi_qualifiers.xm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
