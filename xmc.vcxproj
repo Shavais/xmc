@@ -113,9 +113,9 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
-      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile>pch/pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -132,9 +132,9 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdclatest</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)src;$(SolutionDir)deps\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
-      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile>pch/pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -142,74 +142,84 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\pch.cpp">
+    <ClCompile Include="src\compiler\Refiner.cpp" />
+    <ClCompile Include="src\Compiler.cpp" />
+    <ClCompile Include="src\ProjectFileReader.cpp" />
+    <ClCompile Include="src\CommandLineReader.cpp" />
+    <ClCompile Include="src\compiler\Lexer.cpp" />
+    <ClCompile Include="src\compiler\Parser.cpp" />
+    <ClCompile Include="src\pch\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="src\process\CmdLine.cpp" />
-    <ClCompile Include="src\process\Emitter.cpp" />
-    <ClCompile Include="src\process\Linker.cpp" />
-    <ClCompile Include="src\process\LoadModifiedSources.cpp" />
-    <ClCompile Include="src\process\old\Parser.cpp" />
-    <ClCompile Include="src\process\old\ParserDeclarations.cpp" />
-    <ClCompile Include="src\process\old\ParserExpressions.cpp" />
-    <ClCompile Include="src\process\old\ParserFunctions.cpp" />
-    <ClCompile Include="src\process\old\ParserStatements.cpp" />
-    <ClCompile Include="src\process\ProjectFile.cpp" />
-    <ClCompile Include="src\process\Util.cpp" />
-    <ClCompile Include="src\process\Xmo.cpp" />
+    <ClCompile Include="src\old\process\CmdLine.cpp" />
+    <ClCompile Include="src\old\process\Emitter.cpp" />
+    <ClCompile Include="src\old\process\Linker.cpp" />
+    <ClCompile Include="src\old\process\LoadModifiedSources.cpp" />
+    <ClCompile Include="src\old\process\ProjectFile.cpp" />
+    <ClCompile Include="src\old\process\SymbolTable.cpp" />
+    <ClCompile Include="src\old\process\Util.cpp" />
+    <ClCompile Include="src\old\process\Xmo.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
-    <ClCompile Include="src\experiments.cpp" />
-    <ClCompile Include="src\xmc.cpp" />
+    <ClCompile Include="src\old\experiments.cpp" />
+    <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\tool\Logger.cpp" />
     <ClCompile Include="src\tool\StringFunctions.cpp" />
+    <ClCompile Include="src\Tester.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\AI dumps.txt" />
     <Text Include="doc\AI_conversation_journal.txt" />
     <Text Include="doc\journal.txt" />
+    <Text Include="doc\ProjectContext.txt" />
     <Text Include="doc\The xmc programming language.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\data\AltCodeBlocks.h" />
-    <ClInclude Include="src\data\EmitterData.h" />
-    <ClInclude Include="src\data\SourceFileData.h" />
-    <ClInclude Include="src\data\GlobalData.h" />
-    <ClInclude Include="src\data\CodeBlock.h" />
-    <ClInclude Include="src\data\LinkerData.h" />
-    <ClInclude Include="src\data\ParserData.h" />
-    <ClInclude Include="src\data\PrimaryCodeBlocks.h" />
-    <ClInclude Include="src\data\ProjectFileData.h" />
-    <ClInclude Include="src\data\XmoData.h" />
-    <ClInclude Include="src\pch.h" />
-    <ClInclude Include="src\data\CmdLineData.h" />
-    <ClInclude Include="src\data\Arena.h" />
-    <ClInclude Include="src\process\CmdLine.h" />
-    <ClInclude Include="src\process\Emitter.h" />
-    <ClInclude Include="src\process\Linker.h" />
-    <ClInclude Include="src\data\MemoryData.h" />
-    <ClInclude Include="src\process\old\Parser.h" />
-    <ClInclude Include="src\process\old\ParserInternal.h" />
-    <ClInclude Include="src\process\ProjectFile.h" />
-    <ClInclude Include="src\process\Util.h" />
-    <ClInclude Include="src\stl.h" />
+    <ClInclude Include="src\compiler\Refiner.h" />
+    <ClInclude Include="src\Compiler.h" />
+    <ClInclude Include="src\ProjectFileReader.h" />
+    <ClInclude Include="src\CommandLineReader.h" />
+    <ClInclude Include="deps\include\concurrentqueue.h" />
+    <ClInclude Include="src\old\data\AltCodeBlocks.h" />
+    <ClInclude Include="src\old\data\EmitterData.h" />
+    <ClInclude Include="src\old\data\SourceFileData.h" />
+    <ClInclude Include="src\old\data\GlobalData.h" />
+    <ClInclude Include="src\old\data\CodeBlock.h" />
+    <ClInclude Include="src\old\data\LinkerData.h" />
+    <ClInclude Include="src\old\data\ParserData.h" />
+    <ClInclude Include="src\old\data\PrimaryCodeBlocks.h" />
+    <ClInclude Include="src\old\data\ProjectFileData.h" />
+    <ClInclude Include="src\old\data\XmoData.h" />
+    <ClInclude Include="src\compiler\Lexer.h" />
+    <ClInclude Include="src\compiler\Parser.h" />
+    <ClInclude Include="src\pch\pch.h" />
+    <ClInclude Include="src\old\data\CmdLineData.h" />
+    <ClInclude Include="src\old\data\Arena.h" />
+    <ClInclude Include="src\old\process\CmdLine.h" />
+    <ClInclude Include="src\old\process\Emitter.h" />
+    <ClInclude Include="src\old\process\Linker.h" />
+    <ClInclude Include="src\old\data\MemoryData.h" />
+    <ClInclude Include="src\old\process\ProjectFile.h" />
+    <ClInclude Include="src\old\process\Util.h" />
+    <ClInclude Include="src\pch\stl.h" />
     <ClInclude Include="src\tool\BS_thread_pool.hpp" />
     <ClInclude Include="src\tool\Coff.h" />
-    <ClInclude Include="src\experiments.h" />
+    <ClInclude Include="src\old\experiments.h" />
     <ClInclude Include="src\tool\Logger.h" />
     <ClInclude Include="src\tool\StringFunctions.h" />
     <ClInclude Include="src\tool\TextParser.h" />
-    <ClInclude Include="src\win32.h" />
+    <ClInclude Include="src\pch\win32.h" />
+    <ClInclude Include="src\Tester.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="doc\xcm_04.bnf" />
-    <None Include="tests\xmdev\extern.xm_" />
-    <None Include="tests\xmdev\xmdev.xmc" />
-    <None Include="tests\xmdev\Test01.xm_" />
-    <None Include="tests\hello\hello.xmc" />
-    <None Include="tests\xm\1_Declarations\01_namespace.xm" />
-    <None Include="tests\xm\1_Declarations\02_structs.xm" />
-    <None Include="tests\xm\1_Declarations\03_multi_qualifiers.xm" />
+    <None Include="src\old\tests\xmdev\extern.xm_" />
+    <None Include="src\old\tests\xmdev\xmdev.xmc" />
+    <None Include="src\old\tests\xmdev\Test01.xm_" />
+    <None Include="src\old\tests\hello\hello.xmc" />
+    <None Include="src\old\tests\xm\1_Declarations\01_namespace.xm" />
+    <None Include="src\old\tests\xm\1_Declarations\02_structs.xm" />
+    <None Include="src\old\tests\xm\1_Declarations\03_multi_qualifiers.xm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -11,7 +11,6 @@
 #include "data/PrimaryCodeBlocks.h"
 
 #include "process/Emitter.h"
-#include "process/Parser.h"
 #include "process/Util.h"
 
 #include "tool/Coff.h"
@@ -500,5 +499,5 @@ void RunTestPipeline() {
 
 	// 3. Run the thread-pooled parallel parser we upgraded!
 	std::cout << "Starting parse pass...\n";
-	ParseModifiedSources();
+	// ParseModifiedSources();
 }

@@ -13,4 +13,6 @@ namespace data
 	inline std::atomic<bool> FullScanRequired{ false };
 	inline uint8_t MaxThreads = 6;
 
+	inline thread_local bool BraceMatchError;
+
 } // namespace data

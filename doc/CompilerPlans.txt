@@ -1,4 +1,7 @@
 
+A recursive descent parser was attempted for XMC but quickly became a debugging and maintenance nightmare.
+The volume of code required to simply validate syntax is substantial, and if you change your bnf, good luck fixing all that code.
+
 I've written parsers before using a pattern like this:
 
 We have big table of states, tokens and next states, like this:
@@ -18,18 +21,15 @@ while not EOF:
 	if curchar is not in any of the token sets, emit an error and break
 	look up the state function for the next state and call it, passing the accumulate string + curchar
 	
-One of the state functions is a "accumulate" call that just adds curchar to the accumulated string.
+If the state function is null, no transition happens, the parser just adds curchar to the accumulated string that is eventually passes 
+to the next non-null state handler.
 Most state functions change the current state and clear the accumulated string.
 Many or most state functions could potentially emit parse nodes.
-
-Do you think a pattern like that would be more or less efficient than what we're doing?
-Do you think it would be easier to create, maintain and debug?
 
 -------------------------------------------
 
 
-
-Here's a tentative plan for the compiler; each of these are a spawned thread per source file:
+Here's a tentative plan for the parsing and emitting phases of the compiler; each of these are a separate spawned thread per source file:
 
 lexor: 
 	- table driven state machine that posts tokens into a token queue for the parser 
@@ -81,13 +81,15 @@ coder:
 		- performs some block id vector level optimizations, when possible and convenient
 	- notifies the emmitter upon successful completion
 
-emitter: (already implemented and tested.. no intelligence) 
-	- consumes parse node block id vectors and produces machine code in xmo code buffers 
-	- consumes xmo code buffers and produces a COFF file for the project
-	
+emitter: (already implemented and tested.. contains no intelligence) 
+    - awakens when the coder notifies it of successfull completion
+	- walks the parse tree, consumes parse node block id vectors and produces machine code in xmo code buffers 
+    - saves loaded xmo files that end up with a dirty state
+	- consumes xmo code buffers and produces the single COFF output for the project
+	  (Section 20 of "The xmc programming language.txt" file has notes about xmo files and incremental and full builds.)
 
 
-I'm working on a table like this..
+A first, rough, slow-version thought, is to build a table like this:
 
 {	"statestring", 
 	{	{"encounterstring", "nextstatestring"},		// if whitespace is not to be skipped, 
@@ -95,7 +97,7 @@ I'm working on a table like this..
 	}
 }
 
-which might look like this:
+which might look something like this:
 
 unordered_map<string, vector<pair<vector<string>, string>> NextStates
 	{	"top", 	
@@ -105,13 +107,17 @@ unordered_map<string, vector<pair<vector<string>, string>> NextStates
 		},
 		"arenaidentifier1", 
 		{	{"("}, "arenaexpression1",
+            ..
 		}
 		"",
 		{	{")", "arena3",			
 	}
+;
 
+But that's going to be slow to use.
 
-And then I'm imagining creating a code generator that would generate c++ code that declares
-and populates a set of tables that the lexor would actually use that would be faster to use. 
+Maybe something like this would be faster:
 
-What might those tables look like?
+NextState[NumStateFuncs][126] nextStates = { 0 };
+
+..where most of the values are null. And then NextState would be some kind of struct.

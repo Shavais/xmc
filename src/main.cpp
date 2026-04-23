@@ -1,17 +1,5 @@
-#include "pch.h"
+#include "pch/pch.h"
 
-#include <iostream>
-
-#include "data/CmdLineData.h"
-#include "data/GlobalData.h"
-#include "data/LinkerData.h"
-
-#include "experiments.h"
-
-#include "process/CmdLine.h"
-#include "process/Linker.h"
-#include "process/ProjectFile.h"
-#include "process/Util.h"
 
 #include "tool/Logger.h"
 #include "tool/StringFunctions.h"
@@ -44,7 +32,7 @@ int main(int argc, char* argv[])
 		if (CmdLineArgs.Test)
 		{
 			RunTestPipeline();
-			//CallCppFunction3();
+			// CallCppFunction3();
 			//GetPathToLinker();
 			//GetLinkerArgs();				// populates data::LinkerArgs
 			//RunShellCmd(PathToLinker + LinkerArgs);
@@ -53,8 +41,10 @@ int main(int argc, char* argv[])
 			return 0;
 		}
 
+		// ----------------------------------------------------------------------------
+		// 
 		// We need to refactor the rest of this a bit:
-		// Parsing the modified files requires the symbols from the unmodified files to already be loaded.
+		//
 
 		auto compileStart = std::chrono::high_resolution_clock::now();
 		
@@ -70,6 +60,9 @@ int main(int argc, char* argv[])
 		{
 			LoadXmos(false);		// Partially loads .xmo's associated with unmodified files; parse trees are not loaded
 		}
+
+		//   
+
 		UpdateXmoCode();			// Generates machine code
 		SaveXmos();					// Persists dirty .xmo
 		WriteToCoff();

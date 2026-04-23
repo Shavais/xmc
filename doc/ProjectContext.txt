@@ -1,0 +1,113 @@
+Project & Conversation Summary
+
+The Project
+You are building xmc, an AOT compiler for a new programming language (.xm source files) that compiles directly to native code (COFF/x64) without LLVM
+The compiler is written in C++.
+
+Architecture Decisions Made
+
+Target class structure:
+CommandLineReader
+ProjectFileReader
+Compiler
+    Lexer
+    Parser
+    Typer
+    Refiner
+    Reviewer
+    Coder
+    Emitter
+    Xmo          // .xmo intermediate object file handling
+    Coff         // COFF output file writing
+Tester
+
+Folder structure agreed on:
+
+src/
+    main.cpp
+    CommandLineReader.h / .cpp
+    ProjectFileReader.h / .cpp
+    Compiler.h / .cpp
+    Tester.h / .cpp
+    compiler/
+        Lexer.h / .cpp
+        Parser.h / .cpp
+        Typer.h / .cpp
+        Refiner.h / .cpp
+        Reviewer.h / .cpp
+        Coder.h / .cpp
+        Emitter.h / .cpp
+        Xmo.h / .cpp
+        Coff.h / .cpp
+    tool/           // utility classes (some carried over from other projects)
+
+Namespace: Single flat namespace xmc for everything. No nesting.
+
+The Lexer — Current State
+The lexer has been fully refactored. The delivered files are Lexer.h and Lexer.cpp in namespace xmc. 
+
+Key design:
+
+Lexer::TokenType — enum class with all token types (literals, keywords, operators, punctuation, trivia, diagnostics)
+
+Lexer::Token — struct with type, line, col, srcStart, srcLen, flags. Has FLAG_PRECEDED_BY_SPACE used by the parser to enforce no-whitespace rules on @ and $ operators.
+
+Lexer::Result — contains std::vector<Token> tokens (all tokens including trivia) and bool hadErrors
+
+Lexer::Lex(filename, source, parserQueue, logStream) — const member method. Takes a moodycamel::ConcurrentQueue<Token>& reference; parser-visible tokens (no trivia, no errors) are enqueued into it as they are produced. Returns a Result.
+
+Lexer::InitTables() — public static, initialises DFA tables once (thread-safe). Safe to call at startup for pre-warming.
+
+Lexer::TokenTypeName() — public static, returns human-readable name for logging.
+
+IsParserToken() — private static.
+
+Implementation internals (LexState, CharClass, LexAction, Trans, static tables s_charClass, s_trans, s_keywords) all live as file-scope statics inside Lexer.cpp only — not exposed in the header.
+
+The lexer is a table-driven DFA. The tables are built once and shared across all Lexer instances.
+
+Dependencies in Use
+
+concurrentqueue.h (MoodyCamel ConcurrentQueue) — included in Lexer.h
+pch.h — precompiled header, included first in .cpp
+Previously used third-party libs include parallel_hashmap (phmap) and BS_thread_pool
+
+Compiler Pipeline — Design Intent
+
+Threading model: One threadpool thread per source file. Within that, each compiler stage (Lexer, Parser, Typer, etc.) runs as its own threadpool task. 
+One instance of each compiler class per source file. The DFA tables in Lexer are static so all instances share one copy.
+
+Arena tiers:
+
+Global SymbolArena — owned by Compiler, lives for the full compilation run. Holds interned strings and the global symbol table. 
+Already sharded (SymbolTable[256]) with per-shard shared_mutex for concurrent access.
+
+Per-file Arena — lives inside each Xmo, scoped to that file's compilation. Parse tree nodes, patch symbols, dependency graph nodes etc. 
+are allocated here.
+
+Lexer ? Parser handoff: Via moodycamel::ConcurrentQueue<Lexer::Token> — these two stages can genuinely overlap on the same file.
+
+Typer — design intent:
+
+* Receives parse nodes as they arrive from the Parser
+* Builds a dependency graph of base type relationships
+* Resolves types as anchoring information arrives (concrete types, literals, explicit annotations), propagating resolutions through the graph
+* Defers unresolved nodes rather than blocking
+* Cross-file base type dependencies are directed (caller infers from return type, or callee infers parameter type from call site) — never mutual, 
+so never inherently cyclic. True cycles are user errors, not compiler limitations.
+* A short second pass after all per-file Typers finish closes any chains that depended on cross-file symbols [I don't think this should be needed; if it is, I think that's an error condition, that should be caught by the Reviewer.]
+
+Refiner — design intent:
+
+* Same graph-build-then-propagate pattern, but for refinement morphing
+* Refinement bits only ever get set, never cleared — atomic OR on Symbol::minrmask/maxrmask handles concurrent contributions from multiple files naturally
+* A usage in any file can widen the refinement of a symbol defined in another file (e.g. B adding elements to a list passed in from A makes that list resizable)
+
+Reviewer — design intent:
+
+* Not an inference stage — a validation and error reporting stage
+* Traverses the Typer and Refiner dependency graphs after all nodes have been processed
+* Any node still unresolved at that point represents a programmer error
+* The graphs should carry enough context (where the dependency was introduced, what was expected, what was found) to allow the Reviewer to emit helpful, specific error messages
+* Also validates that inferred refinement state is consistent with any explicit programmer declarations
+

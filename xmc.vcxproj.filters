@@ -15,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\xmc.cpp">
+    <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\experiments.cpp">
+    <ClCompile Include="src\old\experiments.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\tool\Coff.cpp">
@@ -27,46 +27,55 @@
     <ClCompile Include="src\tool\Logger.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\CmdLine.cpp">
+    <ClCompile Include="src\old\process\CmdLine.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\pch.cpp">
+    <ClCompile Include="src\pch\pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\tool\StringFunctions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\ProjectFile.cpp">
+    <ClCompile Include="src\old\process\ProjectFile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\Linker.cpp">
+    <ClCompile Include="src\old\process\Linker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\Util.cpp">
+    <ClCompile Include="src\old\process\Util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\Emitter.cpp">
+    <ClCompile Include="src\old\process\Emitter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\old\Parser.cpp">
+    <ClCompile Include="src\old\process\LoadModifiedSources.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\LoadModifiedSources.cpp">
+    <ClCompile Include="src\old\process\Xmo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\Xmo.cpp">
+    <ClCompile Include="src\old\process\SymbolTable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\old\ParserDeclarations.cpp">
+    <ClCompile Include="src\compiler\Lexer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\old\ParserFunctions.cpp">
+    <ClCompile Include="src\compiler\Parser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\old\ParserStatements.cpp">
+    <ClCompile Include="src\CommandLineReader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\process\old\ParserExpressions.cpp">
+    <ClCompile Include="src\ProjectFileReader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Compiler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Tester.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\compiler\Refiner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -75,9 +84,10 @@
     <Text Include="doc\AI dumps.txt" />
     <Text Include="doc\AI_conversation_journal.txt" />
     <Text Include="doc\journal.txt" />
+    <Text Include="doc\ProjectContext.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\experiments.h">
+    <ClInclude Include="src\old\experiments.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\tool\Coff.h">
@@ -86,22 +96,22 @@
     <ClInclude Include="src\tool\Logger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\CmdLineData.h">
+    <ClInclude Include="src\old\data\CmdLineData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\CmdLine.h">
+    <ClInclude Include="src\old\process\CmdLine.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\pch.h">
+    <ClInclude Include="src\pch\pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\stl.h">
+    <ClInclude Include="src\pch\stl.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\win32.h">
+    <ClInclude Include="src\pch\win32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\GlobalData.h">
+    <ClInclude Include="src\old\data\GlobalData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\tool\StringFunctions.h">
@@ -110,69 +120,87 @@
     <ClInclude Include="src\tool\TextParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\ProjectFileData.h">
+    <ClInclude Include="src\old\data\ProjectFileData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\ProjectFile.h">
+    <ClInclude Include="src\old\process\ProjectFile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\Linker.h">
+    <ClInclude Include="src\old\process\Linker.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\LinkerData.h">
+    <ClInclude Include="src\old\data\LinkerData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\Util.h">
+    <ClInclude Include="src\old\process\Util.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\EmitterData.h">
+    <ClInclude Include="src\old\data\EmitterData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\Emitter.h">
+    <ClInclude Include="src\old\process\Emitter.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\XmoData.h">
+    <ClInclude Include="src\old\data\XmoData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\CodeBlock.h">
+    <ClInclude Include="src\old\data\CodeBlock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\PrimaryCodeBlocks.h">
+    <ClInclude Include="src\old\data\PrimaryCodeBlocks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\AltCodeBlocks.h">
+    <ClInclude Include="src\old\data\AltCodeBlocks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\old\Parser.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\data\ParserData.h">
+    <ClInclude Include="src\old\data\ParserData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\tool\BS_thread_pool.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\SourceFileData.h">
+    <ClInclude Include="src\old\data\SourceFileData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\MemoryData.h">
+    <ClInclude Include="src\old\data\MemoryData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\data\Arena.h">
+    <ClInclude Include="src\old\data\Arena.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\process\old\ParserInternal.h">
+    <ClInclude Include="src\compiler\Lexer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="deps\include\concurrentqueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compiler\Parser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\CommandLineReader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProjectFileReader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Compiler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Tester.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compiler\Refiner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="tests\hello\hello.xmc" />
-    <None Include="tests\xmdev\Test01.xm_" />
-    <None Include="tests\xmdev\extern.xm_" />
-    <None Include="tests\xmdev\xmdev.xmc" />
-    <None Include="tests\xm\1_Declarations\01_namespace.xm" />
-    <None Include="tests\xm\1_Declarations\02_structs.xm" />
-    <None Include="tests\xm\1_Declarations\03_multi_qualifiers.xm" />
+    <None Include="src\old\tests\hello\hello.xmc" />
+    <None Include="src\old\tests\xmdev\Test01.xm_" />
+    <None Include="src\old\tests\xmdev\extern.xm_" />
+    <None Include="src\old\tests\xmdev\xmdev.xmc" />
+    <None Include="src\old\tests\xm\1_Declarations\01_namespace.xm" />
+    <None Include="src\old\tests\xm\1_Declarations\02_structs.xm" />
+    <None Include="src\old\tests\xm\1_Declarations\03_multi_qualifiers.xm" />
     <None Include="doc\xcm_04.bnf" />
   </ItemGroup>
 </Project>

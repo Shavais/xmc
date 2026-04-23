@@ -15,7 +15,8 @@ using std::pair;
 using std::string_view;
 using std::vector;
 
-namespace process
+
+namespace data
 {
 	extern thread_local bool BraceMatchError;
 }
@@ -249,7 +250,7 @@ public:
 	// returns a stringview containing the content of a curly brace pair which is at the current parser position.
 	// advances the parser view's start pointer just past the ending brace.
 	string_view ReadBracedContent(char startbrace = '{', char endbrace = '}') {
-		process::BraceMatchError = false; 
+		data::BraceMatchError = false; 
 		
 		uint64_t start = view_.find(startbrace);
 		if (start == string_view::npos) return {};
@@ -279,7 +280,7 @@ public:
 		{
 			result = view_.substr(start + 1);
 			view_.remove_prefix(view_.size());
-			process::BraceMatchError = true;
+			data::BraceMatchError = true;
 		}
 
 		return result;

@@ -14,7 +14,7 @@
 #include "data/SourceFileData.h"
 #include "data/XmoData.h"
 
-#include "process/Parser.h"
+// #include "process/Parser.h"
 #include "process/Util.h"
 
 #include "tool/BS_thread_pool.hpp"
@@ -228,7 +228,7 @@ namespace process {
 			for (uint32_t i = 0; i < node->patchSymbolCount; ++i) {
 				std::string tempStr = ReadStringFromPtr(base, offset);
 				// This caches the hash and binds the backing char* to your global SymbolArena
-				node->patchSymbols[i] = process::InternString(tempStr.c_str());
+				node->patchSymbols[i] = InternString(tempStr.c_str());
 			}
 		}
 
