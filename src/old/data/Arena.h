@@ -1,126 +1,137 @@
-// data/Arena.h
+// compiler/Arena.h
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <new>
+#include <shared_mutex>
 #include <vector>
 
-using std::make_unique;
-using std::unique_ptr;
-using std::vector;
-
-namespace data
+namespace xmc
 {
+	// Lock-striped bump allocator.
+	//
+	// Chunk buffers are 64-byte aligned, so any Allocate request with
+	// align <= 64 pays only offset rounding, not address rebasing. For
+	// align > 64 the allocator still works via address-based alignment
+	// and wastes at most (align - 1) bytes per allocation.
+	//
+	// Contents are never destructed. Do not store objects with
+	// non-trivial destructors -- names, machine code, ParseTreeNodes,
+	// and Symbols are all fine; anything holding a std::vector or
+	// std::string by value is not.
+	struct Arena
+	{
+		static constexpr size_t CHUNK_SIZE = 1024 * 1024;
+		static constexpr size_t CHUNK_ALIGN = 64;
 
-	struct Arena {
-
-		struct Chunk {
-			std::unique_ptr<uint8_t[]> data;
+		struct Chunk
+		{
+			uint8_t* data;
 			std::atomic<size_t> offset{ 0 };
-			size_t capacity;
+			size_t              capacity;
 
-			Chunk(size_t cap) : data(std::make_unique<uint8_t[]>(cap)), capacity(cap) {}
+			explicit Chunk(size_t cap) : capacity(cap)
+			{
+				data = static_cast<uint8_t*>(
+					::operator new[](cap, std::align_val_t{ CHUNK_ALIGN }));
+			}
+
+			~Chunk()
+			{
+				::operator delete[](data, std::align_val_t{ CHUNK_ALIGN });
+			}
+
+			Chunk(const Chunk&) = delete;
+			Chunk& operator=(const Chunk&) = delete;
+			Chunk(Chunk&&) = delete;
+			Chunk& operator=(Chunk&&) = delete;
 		};
 
-		std::shared_mutex chunk_mtx; // Protects the vector itself
+		std::shared_mutex                   chunk_mtx;
 		std::vector<std::unique_ptr<Chunk>> chunks;
-		static constexpr size_t CHUNK_SIZE = 1024 * 1024;	// 1mb chunks
 
-		void* Allocate(size_t size) {
-			size = (size + 7) & ~7; // 8-byte align
+		void* Allocate(size_t size, size_t align = 8)
+		{
+			// Round size up to a multiple of align so the next allocation
+			// at the same alignment lands naturally without more rounding.
+			size = (size + align - 1) & ~(align - 1);
 
-			// Try to allocate from the current chunk (Lock-free Fast Path)
+			// Fast path: shared lock, CAS on the back chunk's offset.
 			{
-				std::shared_lock read_lock(chunk_mtx);
+				std::shared_lock rl(chunk_mtx);
 				if (!chunks.empty()) {
-					Chunk& current = *chunks.back();
-					size_t old_offset = current.offset.fetch_add(size, std::memory_order_relaxed);
-
-					if (old_offset + size <= current.capacity) {
-						return &current.data[old_offset];
+					Chunk& cur = *chunks.back();
+					uintptr_t base = reinterpret_cast<uintptr_t>(cur.data);
+					size_t    old = cur.offset.load(std::memory_order_relaxed);
+					while (true) {
+						uintptr_t start = (base + old + align - 1) & ~(uintptr_t)(align - 1);
+						size_t    aligned_off = static_cast<size_t>(start - base);
+						size_t    next = aligned_off + size;
+						if (next > cur.capacity) break;           // chunk full
+						if (cur.offset.compare_exchange_weak(
+							old, next, std::memory_order_relaxed)) {
+							return cur.data + aligned_off;
+						}
+						// CAS refreshed `old` -- retry with the new value.
 					}
 				}
 			}
 
-			// Current chunk is full, need a new one
-			std::unique_lock write_lock(chunk_mtx);
+			// Slow path: another thread may have added a chunk with room.
+			std::unique_lock wl(chunk_mtx);
 
-			// Double-check after acquiring lock to see if another thread already added a chunk
 			if (!chunks.empty()) {
-				Chunk& current = *chunks.back();
-				// We use a non-atomic read here because we hold the write lock
-				if (current.offset.load() + size <= current.capacity) {
-					size_t old_offset = current.offset.fetch_add(size);
-					return &current.data[old_offset];
+				Chunk& cur = *chunks.back();
+				uintptr_t base = reinterpret_cast<uintptr_t>(cur.data);
+				size_t    old = cur.offset.load(std::memory_order_relaxed);
+				uintptr_t start = (base + old + align - 1) & ~(uintptr_t)(align - 1);
+				size_t    aligned_off = static_cast<size_t>(start - base);
+				size_t    next = aligned_off + size;
+				if (next <= cur.capacity) {
+					cur.offset.store(next, std::memory_order_relaxed);
+					return cur.data + aligned_off;
 				}
 			}
 
-			// Add new chunk
-			size_t next_size = std::max(CHUNK_SIZE, size);
-			auto new_chunk = std::make_unique<Chunk>(next_size);
+			// Grow. size + align guarantees the request fits even if the
+			// caller asked for align > CHUNK_ALIGN.
+			size_t chunk_cap = std::max(CHUNK_SIZE, size + align);
+			auto   new_chunk = std::make_unique<Chunk>(chunk_cap);
 
-			// allocate in the new chunk
-			void* ptr = &new_chunk->data[0];
-			new_chunk->offset.store(size);
+			uintptr_t base = reinterpret_cast<uintptr_t>(new_chunk->data);
+			uintptr_t start = (base + align - 1) & ~(uintptr_t)(align - 1);
+			size_t    aligned_off = static_cast<size_t>(start - base);
+			void* ptr = new_chunk->data + aligned_off;
+			new_chunk->offset.store(aligned_off + size, std::memory_order_relaxed);
 			chunks.push_back(std::move(new_chunk));
-
 			return ptr;
 		}
 
-		// construct any object in the arena
 		template<typename T, typename... Args>
-		T* Construct(Args&&... args) {
-			void* mem = Allocate(sizeof(T));
-			return new (mem) T(std::forward<Args>(args)...); // construct and place
+		T* Construct(Args&&... args)
+		{
+			void* mem = Allocate(sizeof(T), alignof(T));
+			return new (mem) T(std::forward<Args>(args)...);
 		}
 
-		// allocate a contiguous array of objects in the arena
 		template<typename T>
-		T* ConstructArray(uint32_t count) {
-			void* mem = Allocate(sizeof(T) * count);
+		T* ConstructArray(uint32_t count)
+		{
+			void* mem = Allocate(sizeof(T) * count, alignof(T));
 			T* ptr = static_cast<T*>(mem);
-
-			// Call default constructor for each element in the array
-			for (uint32_t i = 0; i < count; ++i) {
-				new (&ptr[i]) T();
-			}
+			for (uint32_t i = 0; i < count; ++i) new (&ptr[i]) T();
 			return ptr;
 		}
 
-		template <typename T>
-		T* NewArray(uint32_t count) {
-			return (T*)this->Allocate(count * sizeof(T));
+		template<typename T>
+		T* NewArray(uint32_t count)
+		{
+			return static_cast<T*>(Allocate(count * sizeof(T), alignof(T)));
 		}
-
 	};
 
-	// This was an attempt to create an STL compatable arena allocator, but our arena doesn't work for STL containers
-	// because of the chunk boundaries. Also, STL containers really need a heap, not an arena.
-	// 
-	//template <typename T>	
-	//struct ArenaAllocator {
-	//	using value_type = T;
-
-	//	Arena* arena;
-
-	//	// Required constructor
-	//	ArenaAllocator(Arena& a) noexcept : arena(&a) {}
-
-	//	// Required copy constructor for template rebound
-	//	template <typename U>
-	//	ArenaAllocator(const ArenaAllocator<U>& other) noexcept : arena(other.arena) {}
-
-	//	// The core allocation call
-	//	T* allocate(std::size_t n) {
-	//		return static_cast<T*>(arena->Allocate(n * sizeof(T)));
-	//	}
-
-	//	// Deallocate is empty! This is the magic of arenas.
-	//	void deallocate(T* p, std::size_t n) noexcept {}
-
-	//	// Required comparison operators
-	//	bool operator==(const ArenaAllocator& other) const { return arena == other.arena; }
-	//	bool operator!=(const ArenaAllocator& other) const { return arena != other.arena; }
-	//};
-
-} // data
+} // namespace xmc

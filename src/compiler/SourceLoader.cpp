@@ -13,7 +13,7 @@
 
 namespace fs = std::filesystem;
 
-namespace process {
+namespace xmc {
 
 	std::mutex mapMutex;
 

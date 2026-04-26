@@ -2,6 +2,7 @@
 #define SV_LOGGER
 #define FORCE_DEBUG_OUTPUT 
 
+#include <atomic>
 #include <iosfwd>
 #include <ostream>
 #include <streambuf>
@@ -16,6 +17,8 @@ public:
 	Logger(std::ofstream* out, bool isErrorStream = false);
 	~Logger();
 	static const std::string Init();
+
+	inline static std::atomic_bool ErrorOccurred = false;
 
 private:
 	virtual std::streamsize xsputn(const char_type* s, std::streamsize n) override;

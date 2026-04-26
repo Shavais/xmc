@@ -142,8 +142,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\Builder.cpp" />
+    <ClCompile Include="src\builder\Linker.cpp" />
+    <ClCompile Include="src\compiler\SourceLoader.cpp" />
     <ClCompile Include="src\compiler\Refiner.cpp" />
     <ClCompile Include="src\Compiler.cpp" />
+    <ClCompile Include="src\compiler\SymbolTable.cpp" />
+    <ClCompile Include="src\compiler\Xmo.cpp" />
     <ClCompile Include="src\ProjectFileReader.cpp" />
     <ClCompile Include="src\CommandLineReader.cpp" />
     <ClCompile Include="src\compiler\Lexer.cpp" />
@@ -152,17 +157,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="src\old\process\CmdLine.cpp" />
-    <ClCompile Include="src\old\process\Emitter.cpp" />
-    <ClCompile Include="src\old\process\Linker.cpp" />
-    <ClCompile Include="src\old\process\LoadModifiedSources.cpp" />
-    <ClCompile Include="src\old\process\ProjectFile.cpp" />
-    <ClCompile Include="src\old\process\SymbolTable.cpp" />
-    <ClCompile Include="src\old\process\Util.cpp" />
-    <ClCompile Include="src\old\process\Xmo.cpp" />
     <ClCompile Include="src\tool\Coff.cpp" />
     <ClCompile Include="src\old\experiments.cpp" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\tool\FileMapping.cpp" />
     <ClCompile Include="src\tool\Logger.cpp" />
     <ClCompile Include="src\tool\StringFunctions.cpp" />
     <ClCompile Include="src\Tester.cpp" />
@@ -175,36 +173,26 @@
     <Text Include="doc\The xmc programming language.txt" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Builder.h" />
+    <ClInclude Include="src\builder\Linker.h" />
+    <ClInclude Include="src\compiler\Arena.h" />
     <ClInclude Include="src\compiler\Refiner.h" />
     <ClInclude Include="src\Compiler.h" />
+    <ClInclude Include="src\compiler\SourceLoader.h" />
+    <ClInclude Include="src\compiler\SymbolTable.h" />
+    <ClInclude Include="src\compiler\Types.h" />
+    <ClInclude Include="src\compiler\Xmo.h" />
     <ClInclude Include="src\ProjectFileReader.h" />
     <ClInclude Include="src\CommandLineReader.h" />
     <ClInclude Include="deps\include\concurrentqueue.h" />
-    <ClInclude Include="src\old\data\AltCodeBlocks.h" />
-    <ClInclude Include="src\old\data\EmitterData.h" />
-    <ClInclude Include="src\old\data\SourceFileData.h" />
-    <ClInclude Include="src\old\data\GlobalData.h" />
-    <ClInclude Include="src\old\data\CodeBlock.h" />
-    <ClInclude Include="src\old\data\LinkerData.h" />
-    <ClInclude Include="src\old\data\ParserData.h" />
-    <ClInclude Include="src\old\data\PrimaryCodeBlocks.h" />
-    <ClInclude Include="src\old\data\ProjectFileData.h" />
-    <ClInclude Include="src\old\data\XmoData.h" />
     <ClInclude Include="src\compiler\Lexer.h" />
     <ClInclude Include="src\compiler\Parser.h" />
     <ClInclude Include="src\pch\pch.h" />
-    <ClInclude Include="src\old\data\CmdLineData.h" />
-    <ClInclude Include="src\old\data\Arena.h" />
-    <ClInclude Include="src\old\process\CmdLine.h" />
-    <ClInclude Include="src\old\process\Emitter.h" />
-    <ClInclude Include="src\old\process\Linker.h" />
-    <ClInclude Include="src\old\data\MemoryData.h" />
-    <ClInclude Include="src\old\process\ProjectFile.h" />
-    <ClInclude Include="src\old\process\Util.h" />
     <ClInclude Include="src\pch\stl.h" />
     <ClInclude Include="src\tool\BS_thread_pool.hpp" />
     <ClInclude Include="src\tool\Coff.h" />
     <ClInclude Include="src\old\experiments.h" />
+    <ClInclude Include="src\tool\FileMapping.h" />
     <ClInclude Include="src\tool\Logger.h" />
     <ClInclude Include="src\tool\StringFunctions.h" />
     <ClInclude Include="src\tool\TextParser.h" />

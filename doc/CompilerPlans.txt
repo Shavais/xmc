@@ -1,77 +1,49 @@
 
-A recursive descent parser was attempted for XMC but quickly became a debugging and maintenance nightmare.
-The volume of code required to simply validate syntax is substantial, and if you change your bnf, good luck fixing all that code.
+Compiler overview - 
 
-I've written parsers before using a pattern like this:
+Here's a tentative plan for the parsing and emitting phases of the compiler
+There is a (threadpool thread) task per source file, and within each source file thread, 
+each of these are a separate spawned tasks which run concurrently alongside each other:
 
-We have big table of states, tokens and next states, like this:
-
-{state: {tokens: nextstate, ohtertokens: othernextstate, ..}, ...}
-
-We have another big table of state functions, like this:
-
-[state: statefunc(string), ..]
-
-We set the state to the start state, enter a loop like this:
-
-while not EOF:
-	get the next character (into curchar)
-	look up the state
-	iterate over the token sets for the state
-	if curchar is not in any of the token sets, emit an error and break
-	look up the state function for the next state and call it, passing the accumulate string + curchar
-	
-If the state function is null, no transition happens, the parser just adds curchar to the accumulated string that is eventually passes 
-to the next non-null state handler.
-Most state functions change the current state and clear the accumulated string.
-Many or most state functions could potentially emit parse nodes.
-
--------------------------------------------
-
-
-Here's a tentative plan for the parsing and emitting phases of the compiler; each of these are a separate spawned thread per source file:
-
-lexor: 
-	- table driven state machine that posts tokens into a token queue for the parser 
+Lexor: 
+	- table driven state machine that posts tokens into a concurrent queue for the parser 
 	- emits syntax errors like "syntax error - file:line - expected one of [_,_,..] got [_]"
 	- logs file:line:token entries into a token log file for a given project when lexor logging is requested
 		(in the project file for the active config).
 	- cleans up and halts if a "full scan required" event is raised
 
-parser (thread per file):
+Parser (thread per file):
 	- consumes tokens from the token queue
 	- adds symbol and action parse tree nodes to a parse tree
-	- posts newly created parse tree node references into the typer queue
+	- posts newly created parse tree node references into the morpher queue
 	- logs lines about created parse tree nodes into a parser log when parser logging is requested
 	- cleans up and halts if a "full scan required" event is raised
 		
-typer:
-	- consumes the typer queue 
-	- builds a type dependency graph with (references to parse tree nodes)
-	- emits typer errors to an oserror stream when immediate typer error conditions arise
-	- discovers type resolutions and updates the types in parse tree nodes
-	- posts typer-processed parse node references to the refiner queue
-	- logs lines about discovered types into a typer log when typer logging is requested
-	- raises a "full scan required" event if type changes impact xmo's (xmc object files) that aren't fully loaded
-	- cleans up and halts if a "full scan required" event is raised
-	
-refiner:
-	- consumes the refiner queue
-	- builds a refinement dependency graph 
-	- streams refinement related errors to an oserror stream when immedaite refinement error conditions arise
-	- discovers required refinements and updates the refinements in parse tree nodes
-	- raises a "full scan required" event if refinement morphs impact xmo's that aren't fully loaded
-	- cleans up and halts if a "full scan required" event is raised
+Morpher:
+	- consumes parse node refences from the morpher queue 
+	- builds a base type dependency graph (symbol A's base type has dependents b & c, etc.) 
+       with references to parse tree nodes and symbols
+	- builds a refinement dependency graph (symbol A's refinements have dependants b & c..)
+    - maintains a umap<symbol_key, 
+	- discovers base type resolutions and updates the base types in the symbol table (which are referenced by the parse tree nodes)
+    - discovers refinement morphs and increases the minrmask and decreases the maxrmask of symbols 
+	- streams type resolution and refinement morphing errors to an oserror stream when error conditions arise
+	- logs lines about discovered type inferences and refinement mask changes into a morpher log when morpher logging is requested
+	- sets a job ReparseRequired flag and stops if a base type (or variant type list) needs to be changed in an unmodified source file whose 
+        source has not been loaded
+	- sets a job ParseTreeScanRequired flag and stops if a refinement needs to be changed in an unmodified source file whose parse tree has
+        not been loaded (in its xmo)
 
-reviewer:
-	- starts when the lexor, parser, typer and refiner have all finished if no "full scan required" event was raised
-	- scans the parse tree for unresolved types and refinements
+Reviewer:
+	- starts for a given source file when the lexor, parser and morpher have finished if no reload/restart sequence is required and no errors occurred
+	- scans the depencency graphs for unresolved types 
+    - scans 
 	- streams unresolved type and refinement errors to oserror
 	- checks for and performs some parse node level optimizations, when possible and convenient
 	- notifies the coder if reviewing completes without errors
 	
-coder: 
-	- awakens when the reviewer notifies it of successfull completion
+Coder: 
+	- starts for a given xmo (source object file being constructed) when the reviewer notifies it of successfull completion
 	- walks the parse tree
 	- fills parse node code block id vectors:
 		- looks up a vector of base type block id vectors for the node type, symbol basetype and action 
@@ -81,7 +53,8 @@ coder:
 		- performs some block id vector level optimizations, when possible and convenient
 	- notifies the emmitter upon successful completion
 
-emitter: (already implemented and tested.. contains no intelligence) 
+
+Emitter: (already implemented and tested.. contains no intelligence) 
     - awakens when the coder notifies it of successfull completion
 	- walks the parse tree, consumes parse node block id vectors and produces machine code in xmo code buffers 
     - saves loaded xmo files that end up with a dirty state
@@ -89,35 +62,32 @@ emitter: (already implemented and tested.. contains no intelligence)
 	  (Section 20 of "The xmc programming language.txt" file has notes about xmo files and incremental and full builds.)
 
 
-A first, rough, slow-version thought, is to build a table like this:
+----
 
-{	"statestring", 
-	{	{"encounterstring", "nextstatestring"},		// if whitespace is not to be skipped, 
-		{"encounterstring", "nextstatestring"},		// a "#" is prepended to encounterstring
-	}
-}
 
-which might look something like this:
+Current work:
 
-unordered_map<string, vector<pair<vector<string>, string>> NextStates
-	{	"top", 	
-		{	{"arena"}, "arena_identifier1",		
-			{"class"}, "class_identifier1",
-			..
-		},
-		"arenaidentifier1", 
-		{	{"("}, "arenaexpression1",
-            ..
-		}
-		"",
-		{	{")", "arena3",			
-	}
-;
+soon:
 
-But that's going to be slow to use.
+- refactor the code that maintains xmo's into an Xmo class
+x - carry forward the existing Coff class that facilitates building up and writing out a coff file
+x - refactor the code that executes the platform linker into a Linker class 
+- implement the code in main.cpp and Compiler.cpp that glues it all together
+- start writing test programs and implementing compiler (and compiler component) code sufficient to compile and link those tests
 
-Maybe something like this would be faster:
+now:
 
-NextState[NumStateFuncs][126] nextStates = { 0 };
+I need to figure out how to approach testing.
 
-..where most of the values are null. And then NextState would be some kind of struct.
+I see three distinct types of testing that we need to facilitate.
+
+One type consists of individual, small tests that we run as we're building out the compiler. 
+We'll write a test and the implement the parts of the compiler that that test tests and then we'll compile and run the test.
+It would be nice to have some way of building and running those test programs without having to copy and edit a project file for each one.
+
+Another type is a set of pass/fail regression tests that we add to with each new thing we get working so we can convince ourselves
+that recently added functionality hasn't broken anything. Maybe those are all in one UnitTest project or something.
+
+A third type of testing that it would be nice to facilitate are application tests that a programmer puts into their program that they
+can call out individually or as a whole.
+

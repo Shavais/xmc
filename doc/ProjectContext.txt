@@ -7,18 +7,18 @@ The compiler is written in C++.
 Architecture Decisions Made
 
 Target class structure:
+
 CommandLineReader
 ProjectFileReader
-Compiler
-    Lexer
+Compiler            // static Compile(CompileJob) function,
+    Lexer           // 
     Parser
-    Typer
-    Refiner
+    Morpher
     Reviewer
     Coder
+        Xmo
     Emitter
-    Xmo          // .xmo intermediate object file handling
-    Coff         // COFF output file writing
+        Coff         // COFF output file writing
 Tester
 
 Folder structure agreed on:
@@ -27,6 +27,7 @@ src/
     main.cpp
     CommandLineReader.h / .cpp
     ProjectFileReader.h / .cpp
+    Builder.h / .cpp
     Compiler.h / .cpp
     Tester.h / .cpp
     compiler/
@@ -38,8 +39,12 @@ src/
         Coder.h / .cpp
         Emitter.h / .cpp
         Xmo.h / .cpp
-        Coff.h / .cpp
     tool/           // utility classes (some carried over from other projects)
+        Coff.h / .cpp
+        TextParser.h / .cpp
+        StringFunctions.h
+        Logger.h / .cpp
+        BS_thread_pool.hpp
 
 Namespace: Single flat namespace xmc for everything. No nesting.
 
@@ -103,6 +108,8 @@ Refiner — design intent:
 * Refinement bits only ever get set, never cleared — atomic OR on Symbol::minrmask/maxrmask handles concurrent contributions from multiple files naturally
 * A usage in any file can widen the refinement of a symbol defined in another file (e.g. B adding elements to a list passed in from A makes that list resizable)
 
+[The Typer and Refiner have been merged into "Morpher"]
+
 Reviewer — design intent:
 
 * Not an inference stage — a validation and error reporting stage
@@ -111,3 +118,550 @@ Reviewer — design intent:
 * The graphs should carry enough context (where the dependency was introduced, what was expected, what was found) to allow the Reviewer to emit helpful, specific error messages
 * Also validates that inferred refinement state is consistent with any explicit programmer declarations
 
+
+Builder, Compiler, Linker, Tester — Current State
+
+The command line now supports four usage forms:
+
+    xmc <project> [config] [file_filter] [--full]
+    xmc <project> [config] [file_filter] --test [test_filter] [--full]
+    xmc <project> [config] [file_filter] --suite [--full]
+
+CommandLineReader::Args now carries: ProjectName, ConfigName, FileFilter,
+TestFilter, Full (bool), Test (bool), Suite (bool). The Mode enum was
+discarded in favour of these flat flags.
+
+CompileJob (defined in Compiler.h) is the unit of work passed to both
+Compiler::Compile and Linker::Link. It carries:
+    SourceFiles, IntDir, ObjPath, ExePath, Full, InjectTestMain, TestFilter,
+    LexerLog, ParserLog, TyperLog, RefinerLog, ErrorOccurred (mutable atomic_bool).
+std::atomic is neither copyable nor movable, so CompileJob has explicit copy
+and move constructors that load the atomic value.
+
+Builder::Build (Builder.h / Builder.cpp) derives CompileJob(s) from Args and
+ProjectFileReader, calls Compiler::Compile then Linker::Link per job, and
+reports aggregate timing. One job per project normally; one job per matched
+source file when file_filter, --test, or --suite is active.
+
+Linker (Linker.h / Linker.cpp) is a fully refactored class with three private
+methods: FindLinkerPath (locates link.exe via vswhere), BuildArgs (constructs
+the MSVC linker argument string from CompileJob and ProjectFileReader), and
+RunProcess (launches the child process, captures combined stdout/stderr,
+returns output as a string). LinkerData.h global state is gone.
+
+Tester (Tester.h / Tester.cpp) — not yet implemented.
+    Tester::RunTests(args, project) — invokes the test-instrumented binary,
+        captures output, reports pass/fail per test block.
+    Tester::RunSuite(args, project) — invokes each per-file binary, diffs
+        component logs and stdout/stderr against golden files, produces a report.
+
+Project file keys used by the current implementation:
+    Sources      space/semicolon list or glob patterns of .xm files
+    SourceRoot   optional root prefix for Sources paths
+    IntPath      intermediate directory (.xmo files, .obj, component logs)
+    OutPath      output directory (.exe)
+    EntryPoint   <sourcefile>:<function>  (colon is xmc namespace separator)
+    Subsystem    passed to MSVC linker /SUBSYSTEM:
+    CRT          static | dynamic | static-debug | dynamic-debug
+    LibPaths     space/semicolon or [...] list of library search paths
+    StaticLibs   [...] list of static libs
+    DynamicLibs  [...] list of import libs
+    LexerLog     0 | 1 | <dir path>
+    ParserLog    0 | 1 | <dir path>
+    TyperLog     0 | 1 | <dir path>
+    RefinerLog   0 | 1 | <dir path>
+    MaxThreads   0 = unlimited, 1-255 = cap (default 6)
+
+
+=== Compiler architecture (post-refactor) ===
+
+Folder layout:
+    src/
+        main.cpp, CommandLineReader, ProjectFileReader, Builder,
+        Compiler, Tester
+        compiler/
+            Lexer, Parser, Morpher, Reviewer, Coder, Emitter,
+            Xmo, SymbolTable, Types, Arena
+        pch/    (pch.h, win32.h, third-party headers)
+        tool/   (TextParser, StringFunctions, Logger, ...)
+
+Pipeline:
+    Per-xmo, pipelined and concurrent:
+        Lexer -> Parser -> Morpher
+        (Morpher is the merged Typer + Refiner; type inference and
+        refinement narrowing are interleaved because setting a
+        structural refinement bit like Variant is itself a type-
+        level decision.)
+    Barrier:
+        Check break-out flags. If ReparseRequired, re-run the
+        pipeline from Parser for affected xmos. If ParseTreeScanRequired,
+        re-run the Morpher for affected xmos. Each restart kind happens
+        at most once per job (asserted as an invariant).
+    Single-pass:
+        Reviewer  - graph-only, no parse-tree scan; validates that
+                    every unmodified xmo's importsOf still resolves
+                    to a live export. Fails the build on broken imports.
+        Coder     - parallel per xmo, generates code buffers.
+        Emitter   - single-thread, writes COFF from all xmos.
+    Save dirty xmos.
+
+State on Xmo:
+    Empty | HeadersOnly | Full | Modified | Regenerating | LoadFailed
+
+State on CompileJob (atomic):
+    ErrorOccurred, ReparseRequired, ParseTreeScanRequired
+    (Stages check these at loop heads with relaxed loads and unwind
+    cleanly. Dispatcher handles break-outs at the barrier.)
+
+=== SymbolTable ===
+
+Per-CompileJob, not global. Constructed by Compiler with a
+maxNamespaceDepth value sourced from ProjectFileReader's
+"maxnamespacedepth" key (default 5, range 1-32).
+
+Sharded 256 ways on the low byte of FNV-1a hash of the name.
+Each shard owns its own Arena (name bytes and Symbol objects
+cluster by hash for cache locality) and a phmap::flat_hash_map
+keyed by InternedString.
+
+Symbol is exactly 64 bytes and cache-line aligned:
+    name (InternedString, 24)
+    xmoIdx (uint32, 4)         -- index into Compiler::xmos
+    baseType (atomic<u32>, 4)
+    offset (uint32, 4)
+    minrmask (atomic<u8>, 1)
+    maxrmask (atomic<u8>, 1)
+    allocType (1), pathLen (1)
+    union { inline_path[5]; overflow_path; }   (20)
+
+For pathLen <= 5 the path is inline (zero indirection). For depths
+6-32, overflow_path points at arena memory. Symbols are placement-
+new'd into the arena and never destructed -- their atomic and
+trivial-only field set permits this.
+
+InternSymbol must be idempotent on the regeneration path:
+calling it with an (name, path, xmoIdx) that already exists must
+return the existing Symbol pointer, not create a duplicate. This
+is a TODO; current implementation always creates.
+
+=== Xmo class ===
+
+One Xmo per translation unit. Compiler owns
+vector<unique_ptr<Xmo>>; xmoIdx into that vector is stable for
+the entire job (slots are reserved before async load completes,
+and regeneration mutates contents in place rather than replacing
+the slot).
+
+Xmo holds: identity (name, internedName, index), state
+(atomic<XmoState>), content (Arena, codeBuffer, exports, relocs,
+scopeTree, parseTree pointer, FileMapping), ownedSymbols vector
+(non-owning back-references for fast reset and export emission),
+and the dependency graph (observedBy: SymbolKey -> vector<XmoKey>;
+importsOf: XmoKey -> unordered_set<SymbolKey>).
+
+Concurrency:
+    state is atomic.
+    Dependency-graph mutation (RecordImport, RecordObserver,
+    ResetForRegeneration, ScrubDependencyEdges) takes a per-Xmo
+    shared_mutex.
+    Other content fields are owned by one pipeline stage at a time;
+    the barrier between stages is the synchronization point.
+
+=== Incremental build flow ===
+
+Two break-out flavors driven by the Morpher:
+
+    ReparseRequired  - a structural change (base type morph, or a
+                       structural refinement bit like Variant, Arc,
+                       Concurrent, Fluid being set) on a symbol
+                       observed by an unmodified xmo. The observer's
+                       parse tree may compile to different node
+                       shapes; source must be re-parsed.
+
+    ParseTreeScanRequired - a non-structural refinement narrowing
+                       on a symbol observed by an unmodified xmo.
+                       Parse-tree shape stays valid; only the Morpher
+                       needs to re-run on the loaded parse tree.
+
+Cascade is a DAG walk over per-symbol observer edges. Per-symbol
+(not per-xmo) observers because xmo-level granularity would force
+regeneration of every observer when only a single symbol changed.
+
+Cycle detection:
+    Type-inference cycles are caught by a thread-local
+    "currently inferring" set on Symbol* during recursion.
+    Self-collision = real cycle (error). Collision with another
+    thread's set = ordinary contention, wait via existing locks.
+    Cross-xmo cycles aren't separately tracked; small-world DAG
+    walks terminate naturally absent real cycles.
+
+Breaking changes are programmer errors:
+    A modified file removing or renaming a namespace-scoped symbol
+    that unmodified xmos still import is detected by Reviewer
+    (importsOf walk against current SymbolTable state) and reported
+    as a fatal diagnostic. The compiler does not attempt to
+    auto-update the unmodified files.
+
+=== Error handling ===
+
+Two tiers:
+    Fatal errors stop the job (cycles, broken imports, corrupt xmo,
+    unreadable source).
+    Diagnostic errors are collected and reported but participate
+    in expression tainting -- a typer that can't determine a type
+    assigns Error and propagates Error silently, so a single bad
+    expression contaminates downstream uses without producing a
+    cascade of secondary diagnostics.
+
+=== File format (planned, not yet implemented) ===
+
+.xmo layout under design:
+    [XmoHeader]
+    [string pool]              -- all interned names referenced below
+    [exports]                  -- per-symbol baseType/refinement/path
+    [scopes]                   -- scope-tree records
+    [observer edges]           -- (symbol_key, observer_xmo_name)
+    [imports edges]            -- (origin_xmo_name, symbol_key)
+    [code buffer]
+    [relocations]
+    [parse tree]               -- optional; only on Full-state saves
+
+Names are stored as offsets into the string pool and re-interned
+into the new job's SymbolTable on load. xmoIdx is never serialized
+(reassigned at load time per the run's vector ordering).
+
+Lexer tokens are not persisted: lexing is fast enough that caching
+tokens isn't worth doubling the on-disk xmo size.
+
+=== Open TODOs ===
+
+- Arena::Reset() so ResetForRegeneration can reclaim arena bytes.
+- SymbolTable::InternSymbol idempotence on regeneration path.
+- Compiler::FindXmo(XmoKey) or equivalent so Xmo::ScrubDependencyEdges
+  can walk back-references.
+- Decide whether ScrubDependencyEdges runs at end-of-job or as part
+  of regeneration-prep.
+- POSIX path for FileMapping unmap.
+- Whether ParseTreeNode is shared in Types.h or owned by Parser.h.
+
+
+-----------------------------------
+2026/04/26 Update - - - - - - - - -
+
+============================================================
+COMPILER ARCHITECTURE
+============================================================
+
+--- Folder layout ---
+
+src/
+    main.cpp, CommandLineReader, ProjectFileReader, Builder,
+    Compiler, Tester
+    compiler/
+        Lexer, Parser, Morpher, Reviewer, Coder, Emitter,
+        Xmo, SymbolTable, Types, Arena
+    pch/    (pch.h, win32.h, third-party headers)
+    tool/   (TextParser, StringFunctions, Logger, FileMapping, ...)
+
+
+--- Pipeline ---
+
+Per-xmo, pipelined and concurrent:
+    Lexer -> Parser -> Morpher
+
+Morpher is the merged Typer + Refiner. Type inference and
+refinement narrowing are interleaved because setting a structural
+refinement bit (Variant, Arc, Concurrent, Fluid) is itself a
+type-level decision.
+
+Barrier:
+    Check break-out flags. If ReparseRequired, re-run the
+    pipeline from Parser for the affected closure of xmos. If
+    ParseTreeScanRequired, re-run the Morpher for the affected
+    closure of xmos. Each restart kind happens at most once per
+    job (asserted as an invariant).
+
+After the pipeline barrier:
+    Reviewer  - per-file parallel; scans ownedSymbols for
+                BaseTypeIds::Unresolved and emits warnings.
+                Unresolved symbols are not errors -- assignments
+                to them and expressions involving them become
+                runtime no-ops. The Morpher's own diagnostic
+                stream (synchronous, emitted at failure sites
+                with BaseTypeIds::Error tainting) handles real
+                errors.
+
+    Coder     - per-xmo parallel; walks parse trees and emits
+                code buffers. Skips emission for any expression
+                rooted in Unresolved or Error symbols. Inlines
+                small fully-resolved functions. Treats functions
+                with var/let parameters that don't fully resolve
+                inside the body as templates -- inlines per call
+                site against the actual argument types.
+                [ the coder can't inline and remorph, so, this needs review, we have to figure out how we handle inlining ]
+
+    Emitter   - single-thread; writes COFF from all xmos.
+
+Save dirty xmos. Linker invoked.
+
+
+--- CompileJob state ---
+
+    SourceFiles, IntDir, ObjPath, ExePath
+    Full              - force full rebuild
+    InjectTestMain, TestFilter, log paths
+    MaxNamespaceDepth - from project file (default 5, range 1-32)
+
+Atomic flags (set by stages, checked at loop heads):
+    ErrorOccurred           - any fatal diagnostic
+    ReparseRequired         - structural change reaches an
+                              unmodified xmo; pipeline must
+                              restart from Parser for the
+                              affected closure
+    ParseTreeScanRequired   - non-structural refinement reaches
+                              an unmodified xmo; pipeline must
+                              restart from Morpher for the
+                              affected closure
+
+
+--- SymbolTable ---
+
+Per-CompileJob, not global. 
+[That's true, it is per compile job. This means SymbolSubscribers is alo per compile job.]
+Constructed by Compiler with maxNamespaceDepth from the project file. 
+Sharded 256 ways on the low byte of FNV-1a hash of the name. Each shard owns its own Arena (name bytes and Symbol objects cluster by hash for 
+cache locality) plus a phmap::flat_hash_map<InternedString, SymbolEntry>.
+
+
+Symbol is exactly 64 bytes, cache-line aligned:
+    name (InternedString, 24)
+    xmoIdx (uint32, 4)         -- index into Compiler::xmos
+    baseType (atomic<u32>, 4)
+    offset (uint32, 4)
+    minrmask (atomic<u8>, 1)
+    maxrmask (atomic<u8>, 1)
+    allocType (1), pathLen (1)
+    union { inline_path[5]; overflow_path; }   (20)
+
+For pathLen <= 5 the path is inline (zero indirection). Beyond
+5 (up to 32) overflow_path points at arena memory. Symbols are
+placement-new'd into the arena and never destructed.
+
+InternSymbol must be idempotent on the regeneration path:
+calling it with an (name, path, xmoIdx) that already exists
+must return the existing Symbol pointer. Current implementation
+always creates -- TODO.
+
+
+--- BaseTypeIds ---
+
+    Unresolved = 0    -- default; never assigned by the Morpher
+    Null              -- explicit null/unit type
+    Error             -- inference failed; diagnostic already
+                         emitted; propagates silently through
+                         dependent expressions
+    b8, i8, i16, i32, i64, T_U8, ..., function, uclass, ...
+
+Symbol's default-constructed baseType (atomic<u32> initialized
+to zero) is therefore Unresolved. Reviewer scans for this state.
+
+
+--- Xmo class ---
+
+One Xmo per translation unit. Compiler owns
+vector<unique_ptr<Xmo>>. xmoIdx is stable for the entire job:
+slots are reserved before async load completes, and
+regeneration mutates contents in place rather than replacing
+the slot.
+
+State (atomic):
+    Empty | HeadersOnly | Full | Modified | Regenerating | LoadFailed
+
+Content:
+    name, internedName, index
+    arena, codeBuffer, exports, relocs, scopeTree
+    parseTree (root ParseTreeNode*; into arena)
+    tempGlobalOffset
+    mapping (FileMapping)
+    ownedSymbols (non-owning back-references for fast reset and
+                  export emission)
+
+Persisted dependency edges (file-on-file only):
+    importsFromXmos : set<XmoKey>  -- I depend on these
+    observedByXmos  : set<XmoKey>  -- these depend on me
+
+Per-symbol dependency state lives on parse nodes (see below)
+and in the Morpher's run-scoped subscriber index. Neither is
+persisted.
+
+
+--- Parse tree as dependency graph ---
+
+ParseTreeNode (allocated in the Xmo's arena):
+    kind, parent, children
+    baseType, minrmask, maxrmask     -- atomic; resolution state
+    declaredSymbol                   -- for declaration nodes:
+                                        the Symbol declared here
+    payload                          -- kind-specific data
+
+The parse tree IS the dependency graph. Resolution flows along
+parent/child links: when a node resolves, the Morpher walks its
+parent up to check whether the parent can now resolve.
+
+Cross-symbol propagation uses a separate subscriber index because
+references to a symbol may originate in many xmos and live in
+many parse trees -- the symbol's declaration node is not the
+right home for the list. See "Subscribers index" below.
+
+Forward references (calling a function whose definition appears
+later) are handled with Stub parse nodes: when Parser hits a
+reference to an undeclared name, it interns a placeholder Symbol
+(Unresolved type), creates a Stub ParseTreeNode for the future
+declaration, and registers the Stub as the symbol's declaration.
+Subsequent references subscribe to the Stub the same as to any
+declaration. When the real declaration arrives, the Stub is
+mutated in place into the real declaration kind, preserving its
+subscriber list.
+
+
+--- Subscribers index (in-memory, per Morpher run) ---
+
+[ This needs to be per compile job. Morpher threads are using this to push morphs through their own parse trees and potentially through each other's. ]
+
+    phmap::flat_hash_map<SymbolKey, SubscriberList*, SymbolKeyHash>
+        subscribers[256];
+    std::shared_mutex subscriberShardMtx[256];
+
+SubscriberList is a lock-free append-only Treiber stack of
+ParseTreeNode*. SubscriberLists are allocated from shard-local
+arenas; addresses are stable for the run.
+
+Operations:
+    Append (Parser, on cross-reference resolution):
+        shared lock on shard for map lookup, then CAS-push
+        onto the list.
+    Iterate (Morpher, on symbol morph):
+        shared lock on shard for map lookup, snapshot head,
+        release lock, walk list with no further locking.
+    Insert new entry (Parser, on first reference to a symbol):
+        unique lock on shard.
+
+Subscribers are never removed. Inferences and refinement morphs
+are cumulative -- a symbol may morph more than once at different
+sites, and dependents must re-run each time. Stale subscriber
+notifications are harmless: a re-fired node that's already at
+its current resolved state simply no-ops.
+
+
+--- Concurrent morph propagation ---
+
+ParseTreeNode::baseType / minrmask / maxrmask are atomic.
+Morphs are monotonic over the type lattice (base types only
+become more specific; refinement bits only narrow toward
+minrmask), so:
+
+  - Concurrent updates to the same parse node serialize through
+    the atomic store. Last write wins; with monotonic morphs,
+    every order produces the same final state.
+  - Re-fired notifications are idempotent. A re-enqueued node
+    that's already at its current state is a no-op.
+  - Walking parent pointers up the tree after a node resolves
+    requires no locks. Each parent visit does an atomic store
+    of its own resolved state if applicable.
+
+Parse-tree mutation that grows children-vectors (e.g. a Call
+node receiving its child argument-list when a forward-referenced
+callee resolves) needs synchronization at the affected node only.
+A targeted per-node-kind mutex (or a sharded lock pool indexed
+by node address) handles this without burdening the common case.
+Specific design TBD; deferred until profiling demands it.
+
+
+--- Break-out recovery and frontier discovery ---
+
+A break-out is signaled when the Morpher narrows a Symbol whose
+xmo has observers in HeadersOnly state. Structural narrowing
+sets ReparseRequired; non-structural sets ParseTreeScanRequired.
+
+When the dispatcher detects either flag at the barrier, it
+computes the affected closure:
+
+    seed = { xmos that originated the morphs }
+    expand seed by transitive closure over importsFromXmos
+    until no new xmos are added.
+
+Closure expansion uses file-on-file edges only. Per-symbol
+granularity cannot be used for frontier discovery because we
+don't yet know which exports of an unmodified xmo will morph
+until we re-run the Morpher on it -- which requires its
+dependencies to already be loaded.
+
+ReparseRequired action: for each xmo in the closure, load source
+if not loaded, ResetSymbolsForRegeneration, ResetForRegeneration,
+restart Lexer -> Parser -> Morpher.
+
+ParseTreeScanRequired action: for each xmo in the closure, load
+parse tree if HeadersOnly, restart Morpher only.
+
+Per-symbol subscriber index is rebuilt naturally as Parser/Morpher
+process the closure -- no persistence required.
+
+
+--- Function classification ---
+
+The Morpher classifies each function based on whether all of
+its var/let parameters resolve internally:
+
+  - Fully resolved: function compiles to a single body. Coder
+    may inline small instances at call sites for efficiency
+    but is not required to.
+
+  - Partially resolved (one or more var/let parameters with
+    types that depend on call-site arguments): function is
+    treated as a template. Coder inlines the body per call
+    site against the actual argument types. Different call
+    sites may produce different code.
+
+A var parameter whose only internal use is in s8 contexts has
+its base type resolved to s8 internally -- it does not require
+template treatment.
+
+minrmask on a parameter acts as a requirement on call-site
+arguments: an argument that cannot morph to satisfy a
+parameter's minrmask is rejected.
+
+Function pointers carry a signature type (callable with these
+argument types, returning this type). Calls through the pointer
+resolve from the signature, not from any specific body. Function
+pointers are not eligible for template-style inlining.
+
+
+--- Reviewer ---
+
+Per-file parallel pass after the pipeline barrier. For each
+Symbol in each Xmo's ownedSymbols:
+
+  - If baseType == Unresolved: emit warning ("inference did not
+    reach symbol X"). Coder will treat assignments to this
+    symbol and expressions involving it as no-ops.
+  - If baseType == Error: ignore (already reported).
+  - Otherwise: no action.
+
+Reviewer does not set ErrorOccurred. Coder runs regardless.
+
+
+--- Error and warning model ---
+
+Two streams:
+
+  Synchronous diagnostics from Parser/Morpher. Emitted at the
+  failure site. The offending symbol or expression node is
+  marked BaseType::Error. Error propagates silently through
+  dependent operations (no cascade).
+
+  Reviewer warnings for genuinely unresolved symbols (never
+  visited by the Morpher because their pending dependency never
+  fired). Distinct from Error -- these become runtime no-ops
+  rather than compile errors.
+
+Errors set ErrorOccurred and skip Coder/Emitter. Warnings do not.

@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+﻿#include "pch/pch.h"
 #include "Logger.h"
 #include <string>
 #include <iostream>
@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <shlobj.h>
 #include <mutex>
-#include "data/GlobalData.h"
 
 namespace fs = std::filesystem;
 using std::ostream;
@@ -92,7 +91,7 @@ std::streambuf::int_type Logger::overflow(int_type c) {
 }
 
 void Logger::CommitLine(const std::string& line) {
-	if (isError_ && !line.empty()) data::ErrorOccurred = true;
+	if (isError_ && !line.empty()) ErrorOccurred = true;
 
 	// Mutex lock ensures one thread writes its whole line before the next
 	std::lock_guard<std::mutex> lock(writeMutex);
