@@ -88,19 +88,19 @@ function-member
 ; TYPE SPECIFIERS
 ;----------------------------------------------------------------------------
 ;
-; "ref" before a type denotes an arc (shared-ownership) pointer:
+; "arc" before a type denotes a shared pointer:
 ;
-;   ref Node   next;       -- shared pointer to a Node
-;   ref var    handler;    -- shared pointer to a morphing variant
-;   ref ss8    name;       -- shared pointer to a zs8
+;   arc Node   next;       -- shared pointer to a Node
+;   arc var    handler;    -- shared pointer to a morphing variant
+;   arc zs8    name;       -- shared pointer to a zs8
 ;
 ; "let" declares a variable whose type is inferred from its first assignment
 ; and then held fixed — no morphing occurs after that point. This is the
 ; correct declaration form for function references and for any variable
 ; where you want inference without the risk of subsequent type changes:
 ;
-;   let fn1 = myInstance.AddToList(sz8);    -- bound, signature (sz8) -> null
-;   let fn2 = MyClass.Swap(i32, i32);       -- unbound, signature (i32, i32) -> null
+;   let fn1 = myInstance.AddToList(zs8);    -- bound, signature (zs8) -> null
+;   let fn2 = MyClass:Swap(i32, i32);       -- unbound, signature (i32, i32) -> null
 ;   let x   = 5;                            -- x is u8, frozen
 ;
 ; "var" declares a variable that infers its type and is free to morph.
@@ -108,9 +108,9 @@ function-member
 ;
 ; function-type provides an explicit function signature:
 ;
-;   function(sz8) -> b  fn3;
-;   *function(sz8) -> b fn9;     -- raw pointer to a function
-;   &function(sz8) -> b fn10;    -- arc pointer to a function
+;   function(zs8) -> b  fn3;
+;   *function(zs8) -> b fn9;     -- raw pointer to a function
+;   &function(zs8) -> b fn10;    -- arc pointer to a function
 
 type-specifier
     ::= { low-refinement-qualifier } base-type
@@ -118,7 +118,7 @@ type-specifier
     | ptr-type
     | "var"                       ; inferred, morphable
     | "let"                       ; inferred, frozen after first assignment
-    | "ref" type-specifier        ; arc/shared pointer to type
+    | "arc" type-specifier        ; arc/shared pointer to type
     | function-type               ; explicit function signature
 
 ; Type specifiers for function parameters use high-refinement specifiers
@@ -134,14 +134,15 @@ parameter-type-specifier
     | ptr-type
     | "var"
     | "let"
-    | "ref" type-specifier        ; arc/shared pointer parameter
+    | "arc" type-specifier        ; shared pointer parameter
     | function-type
     ;
     ; Parameters declared with ptr-type (**Node, *&Node, etc.) are explicit
     ; pointer parameters. They do not participate in refinement morphing.
     ; The compiler does not infer or adjust their pointer depth.
-    ; raw and ref qualifiers on non-ptr-type parameters continue to set
-    ; minimum refinement floors as before.
+    ; raw and arc qualifiers on non-ptr-type parameters continue to set
+    ; maxrmask and minrmask bits as before (although, to be clear, both raw
+    ; and arc imply virtual. There are no raw or arc materialized values.)
 
 base-type
     ::= "b"
@@ -227,8 +228,8 @@ ptr-type
 ; a type-specifier is valid: variable declarations, parameter types, ptr-type
 ; operands (*function(...) -> T, &function(...) -> T), and is-checks:
 ;
-;   function(sz8) -> b  fn3;
-;   *function(sz8) -> b fn9;
+;   function(zs8) -> b  fn3;
+;   *function(zs8) -> b fn9;
 ;   fn is function(i32, i32)          -- is-check, return type omitted
 ;   fn is function(i32, i32) -> b     -- is-check, return type specified
 ;
@@ -256,9 +257,9 @@ type-list
 ; function-type variable — a full type-list specialization must be supplied.
 ; Assigning a bare unspecialized name is a compile-time error:
 ;
-;   let fn6 = MyClass.Swap(i32, i32);    -- ok: specialization provided
-;   let fn7 = MyClass.Swap(f32, f32);    -- ok: different specialization
-;   let fn8 = MyClass.Swap;              -- error: unspecialized generic
+;   let fn6 = MyClass:Swap(i32, i32);    -- ok: specialization provided
+;   let fn7 = MyClass:Swap(f32, f32);    -- ok: different specialization
+;   let fn8 = MyClass:Swap;              -- error: unspecialized generic
 
 function-ref-expr
     ::= qualified-name "(" [ type-list ] ")"
@@ -617,7 +618,7 @@ primary-expr
 ;
 ; Typical use patterns:
 ;
-;   ; option 1 — function ref is truthy when non-null
+;   ; option 1 — function reference is truthy when non-null
 ;   if (handler.onClick)
 ;       handler.onClick(x, y);
 ;
@@ -700,11 +701,14 @@ BOOL-LITERAL ::= "true" | "false"
 
 KEYWORD
     ::= "var" | "let" | "namespace"
-    | "mutable" | "resizable" | "virtual" | "arc"
-    | "heterogenous" | "fluid" | "concurrent" | "variant"
-    | "immutable" | "fixed" | "materialized" | "raw"
-    | "homogenous" | "rigid" | "serial" | "singular"
-    | "ref"
+    | "immutable" | "mutable" 
+    | "fixed" | "resizable"
+    | "materialized" | "virtual" 
+    | "raw" | "arc"
+    | "homogenous" | "heterogenous" 
+    | "rigid" | "fluid" 
+    | "serial" | "concurrent" 
+    | "singular" | "variant"
     | "struct" | "class" | "error" | "extern" | "weak"
     | "arena" | "heap" | "function"
     | "null" | "me" | "is" | "true" | "false"
@@ -830,15 +834,15 @@ struct-member
 ; Unspecified trailing positions default to the zero (less-refined) side.
 ; Use "_" as a placeholder to skip a position and accept its default.
 ;
-; "ref" before a type declares a shared-pointer variable (arc ownership):
-;   ref Node next;           -- shared pointer to Node
-;   ref var handler;         -- shared pointer to a morphing variant
+; "arc" before a type declares a shared-pointer variable (arc ownership):
+;   arc Node next;           -- shared pointer to Node
+;   arc var handler;         -- shared pointer to a morphing variant
 ;
 ; "let" declares a variable whose type is inferred from its first assignment
 ; and then frozen — no further morphing. This is the standard form for
 ; function reference variables:
-;   let fn1 = myInstance.AddToList(sz8);
-;   let fn2 = MyClass.Swap(i32, i32);
+;   let fn1 = myInstance.AddToList(zs8);
+;   let fn2 = MyClass:Swap(i32, i32);
 ;   let x   = 42;            -- x is u8, will not morph to a larger type
 ;
 ; "var" declares a variable that infers its type and may continue to morph.
