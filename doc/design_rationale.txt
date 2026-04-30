@@ -1,0 +1,386 @@
+﻿XMC DESIGN RATIONALE
+====================
+
+This document captures the reasoning behind design decisions in the xmc language and compiler. 
+The language document (The xmc programming language - rev 2.txt) describes what the language is. 
+This document explains why it is that way — the tradeoffs considered, the alternatives rejected, and the principles that recur across decisions. 
+It is meant for future implementers, reviewers, and design-conversation participants who will encounter the rules and want to know what they're protecting.
+
+This is a living document. New decisions should add to it; revisions to existing rules should update it.
+
+
+GUIDING PRINCIPLES
+==================
+
+These principles emerged from individual decisions and have proven useful as guides for new ones. They are not absolute rules — sometimes one yields to
+another — but each has won out enough times to deserve naming.
+
+1.  Don't pay for what you didn't ask for. The default behavior of the language should impose only the costs the programmer asked for. 
+    Safety nets that cost runtime work need to be opt-in, not opt-out, unless they are necessary for soundness. 
+   
+    Examples: 
+        
+        Locals are not zero-initialized by default (only when reach forces it).
+        Shadows are not created implicitly from "is" checks. 
+        Generator handles do not materialize as runtime objects unless they cross a function boundary.
+
+2.  Inference where it's free, explicitness where it costs. The compiler should infer what it can prove from context, but should require explicit syntax when 
+    its inference would either cost runtime work or change semantics in a non-obvious way. 
+
+    Examples: 
+        
+        "var" morphs freely based on use. 
+        "ref" (formerly "let") infers the type and freezes it, making the freeze visible at the source level. 
+        "Generator<T>" is the explicit form for the polymorphic-cost case while "ref g = MyGen()" is the implicit zero-cost form.
+
+3.  The compiler does its job; the programmer does theirs. Optimizations that only the compiler can do (definite-assignment analysis, dead code elimination, 
+    generator/consumer merging) are the compiler's responsibility. Decisions that depend on programmer intent (whether to pin a type, whether to materialize a handle, 
+    whether to handle an error) are the programmer's responsibility, expressed through syntax. The compiler does not try to guess intent.
+
+4.  Same syntax, same meaning. If two constructs use the same operator or keyword, they should mean the same thing structurally. The colon ":" means "scope qualification"
+    everywhere it appears (file scope, namespace, class, label, inheritance). The dot "." means "member access on a value." A reach is a reach whether the source is a
+    labeled block, a nested if, or a shadow scope.
+
+5.  Provide control where performance matters. xmc is meant to compete with C on hot paths. Where a default behavior costs measurable runtime work, the language must
+    provide a way for the programmer to opt out. Where a design choice closes off a performance technique entirely, the choice should be reconsidered. (We have not yet 
+    had to override this principle; if we do, document the reason here.)
+
+6.  Working code, not error gates. When the language faces an ambiguous construct, prefer a useful default with appropriate diagnostic feedback, not a refusal to compile.
+    Errors are reserved for cases where no reasonable default exists. The animating goal is rapid prototyping that produces the highest performing result possible given
+    what the programmer wrote, with minimal subsequent effort to optimize. Working programs continue working; warnings inform without blocking; per-warning configuration
+    lets programmers tune what reaches their build log. Examples: missing attributes are noops, not errors; var is implicit on undeclared assignment, not an error; type
+    morphs apply silently when unambiguous; { 1, 2, 3 } produces an array literal even when typed var.
+
+7.  Useful defaults, not heroic inference. The compiler picks reasonable defaults when the programmer's intent can be inferred from the shape of what they wrote. It does
+    not synthesize missing structure, invent values, or reconcile contradictions. When intent is genuinely unclear, an error is more useful than a guess. Compiler speed,
+    maintainability, and the programmer's understanding of their own program are values that constrain how aggressively the language will try to make broken-looking input 
+    compile.
+
+
+KEY DECISIONS AND THEIR REASONING
+=================================
+
+1. ref replaced let
+-------------------
+
+The keyword for "infer-then-freeze" variable declarations was originally "let", following Rust, Swift, JavaScript, ML. It was renamed to "ref".
+
+Reason: "let" is a verb in English ("let x equal 5"). It reads naturally in "let x = 5;" but parses awkwardly in parameter declarations like
+"(let gen)" where there is no equation for the verb to govern. "ref" is an adjective ("ref'd x") and reads cleanly in both contexts: "ref x = 5"
+("the ref'd x equals 5") and "(ref gen)" ("a ref'd gen parameter"). The rename also exposes the symmetry between "var x" and "ref x" — both are
+adjective-noun, both are declarations, the difference is whether the type is morphable or frozen.
+
+Cost: programmers from Rust/Swift/JS will need to recalibrate. The cost is small — once they see one declaration they pattern-match on the meaning. 
+"ref" had previously meant "shared pointer" briefly; that meaning was retired in the same revision.
+
+
+2. Implicit shadows from "is" rejected
+--------------------------------------
+
+When the programmer writes "if (u is User) { u.login(); }", the language could create an implicit shadow "User u = u;" so that inside the if
+body, "u" is strictly typed as User. Swift, Kotlin, TypeScript do this. xmc does not.
+
+Reason: An implicit shadow has its own storage in the function frame, a copy at the narrowing site, and the conceptual confusion of two variables 
+sharing a name. None of those costs were asked for by the programmer, who just wanted the type system to recognize that "u" is narrowed inside the body.
+
+What xmc does instead: flow-sensitive type knowledge about the existing "u". The compiler knows for the duration of the if-body that the variant
+is currently in its User case, and uses that knowledge to validate member access and dispatch calls. No new variable. No copy. The single "u" is just 
+better-known inside the body than outside.
+
+If the programmer wants a separate binding (to pass strictly-typed value to a function, or to outlive the if-body via labeled-block reach), they
+write the explicit shadow "User u = u;" and pay for it knowingly.
+
+
+3. Locals are not zero-initialized by default
+---------------------------------------------
+
+A common safety-vs-performance tradeoff: zero locals at function entry to make uninitialized reads return a defined value (null/zero), or skip
+the zeroing for performance and risk reading garbage stack.
+
+xmc's answer: the Morpher determines which locals are *reached* from an enclosing scope and *not provably written* on every path. Only those
+locals get zeroed at function entry. Everything else is uninitialized stack memory. Functions that don't use reach pay no initialization cost.
+
+Reason: the safety guarantee in §13 ("reach reads null on skipped path") needs zeroing to be sound. Zeroing every local for the sake of every
+function would be safety the programmer didn't ask for. Zeroing only the locals that need it for §13 to hold preserves the guarantee without 
+imposing unrequested cost.
+
+For variables that should be initialized regardless, the programmer writes "var x = 0;" or "i32 a[5] = { 0 };" explicitly.
+
+
+4. Generator handles: dual-mode by visibility
+---------------------------------------------
+
+Generators yield values lazily. The challenge is making the for-loop case (the common case) zero-cost while still allowing handles to escape
+their creating function (the rare case).
+
+xmc's answer: Two handle types in one design.
+
+ -  The specific handle type is opaque, unnamed in source, and used inside the function that called the generator. While the merger can see both ends 
+    ("for (x in MyGen()) ..."), it inlines the generator into the consumer. No handle exists at runtime. Cost: zero.
+
+ -  The polymorphic handle type "Generator<T>" is named, programmer-visible, and used when a handle escapes — returned from a factory, stored in a
+    container, passed across function boundaries with a "var" or "Generator<T>" parameter. It carries a function pointer to the generator's boxed 
+    .next()" and an arc reference to its captured state. Cost: one indirect call per iteration.
+
+The conversion from specific to polymorphic is automatic at the boundary where escape is detected. The programmer chooses by what they type their 
+receiver: "ref g = MyGen()" keeps the specific type; "var g = MyGen()" or "Generator<T> g = MyGen()" materializes.
+
+Reason: This gives the merger the visibility it needs for the fast path, while still giving programmers a way to use generators polymorphically when 
+they want to. The cost difference is real and honest. Single-form designs would either lose merging (slow common case) or lose polymorphic use (no 
+factories, no containers of generators, no lazy stream pipelines).
+
+
+5. Generators are single-use
+----------------------------
+
+A generator handle, once exhausted, stays exhausted. To restart, call the generator function again — "for (x in MyGen()) ..." written a second time 
+produces a fresh iteration.
+
+Reason: matches Python, JavaScript, C++ coroutines, Rust iterators, and practically every other modern language with generators (Ruby is the exception). 
+Restartable generators raise hard semantic questions (re-evaluate captured arguments? re-use them?) that single-use sidesteps entirely. Reinstantiation 
+is free in the merged path because the merger inlines the generator at each call site.
+
+
+6. Typer and Refiner merged into Morpher
+----------------------------------------
+
+The original pipeline was Lexer → Parser → Typer (assigns base types) → Refiner (handles refinement morphs) → Coder. Typer was to feed Refiner through a work 
+queue.
+
+These were merged into a single Morpher stage. Reason: refinement morphs can induce type morphs. The clearest example is singular → variant: 
+
+When the Refiner determines that a variable used as a container of one type also gets assigned a value of another type, it must morph the variable's type to a 
+variant of both — which is a type change, not a refinement change. The two phases cannot be separated into stages with a one-way dependency.
+
+
+7. ClassName.member is rejected; class scope uses ClassName:member
+-------------------------------------------------------------------
+
+For instance-based access, "instance.member" uses the dot. For class-scope access (static members, type-side methods), the colon is required: "Counter:GetCount()", 
+not "Counter.GetCount()".
+
+Two leniencies were considered:
+
+ -  "instance.staticMember" rewriting to "Class:staticMember" — accepted. The dot form on an instance is rewritten by the compiler so that refactoring a member between 
+    static and instance does not break call sites.
+
+ -  "Class.staticMember" accepting the dot directly — rejected. There is no equivalent ergonomic argument: The class name is a class name in either spelling, the 
+    refactoring case does not apply, and accepting both blurs the rule that "dot means value-on-the-left, colon means scope-on-the-left."
+
+Reason: the dot/colon distinction does real work for the morpher and for human readers. The morpher uses it to know whether the left side must resolve to a value or a
+scope. Readers use it to see whether an access goes through a value or directly into a class. Allowing both spellings on a class name would cost both — for nothing the
+programmer actually needed. Strict-by-default here is not about typo prevention (no one mistypes ":" as "."); it is about preserving an invariant the rest of the language
+depends on.
+
+
+8. *T and &T pin all rmask bits; raw T and arc T do not
+-------------------------------------------------------
+
+"raw T" is a ceiling on bit 4 of the rmask (caps maxrmask, prevents arc). "arc T" is a floor on bit 4 (bumps minrmask, requires at least arc). Both leave the other rmask
+dimensions free to morph based on usage.
+
+"*T" and "&T" are explicit pointer types. They pin the entire rmask, not just bit 4.
+
+Reason: two reasons.
+
+First, nested pointer types — "**T", "*&T", "&*T" — cannot be expressed using refinement qualifiers alone. The raw/arc bit applies once, to whether the value (when it's a 
+pointer) has a refcount header. There is no rmask machinery for "raw pointer to a raw pointer." The explicit constructors "*" and "&" compose; the refinement qualifiers do 
+not.
+
+Second, FFI layout stability. When calling a C function that expects a "u8*", the pointer must be to a value whose layout is exactly known. If "*u8" participated in normal 
+refinement morphing, some other use of the same buffer in xmc code could push it to fluid or variant, and now the foreign function gets xmc-internal layout it doesn't 
+understand. "*T" as "everything pinned by default" is a much more usable FFI tool than "remember to pin every dimension explicitly."
+
+
+9. Control-flow variants generalize errors and exhaustion
+---------------------------------------------------------
+
+Errors and generator-exhaustion are structurally the same: a function returns, but with a tag that says "this isn't a normal value, this is a control-flow signal." 
+xmc treats both as "control-flow variants" and routes them through three handling sites: error blocks "{? ?}", the pipe operator "|", and loop-binding forms 
+"while (var x = expr)".
+
+A control-flow variant outside any handling site behaves like an ordinary variant — noop contagion (§25, generic code) absorbs unhandled cases without exception-style 
+unwinding.
+
+Reason: errors as exceptions create a hidden control-flow channel that every function participates in, increasing reasoning cost. Errors as data flowing through return 
+values keep function contracts honest. Generator exhaustion is also data, in the same shape. Treating them uniformly gives the language one mechanism instead of two.
+
+The pipe was originally the error operator only. Generalizing it to handle any control-flow variant added the "it" binding for inspection and the rule that unhandled 
+variant tags re-raise (continue propagating to the next enclosing handler).
+
+
+10. Bare reach addresses the bare scope; labeled reach addresses the labeled scope
+----------------------------------------------------------------------------------
+
+A reach reads the variable as it exists in the named scope, not in any nested scope inside it. A bare reach addresses the enclosing-scope's binding by ordinary name 
+resolution. A label-qualified reach addresses the labeled scope's bindings — including any shadows declared directly inside the labeled scope.
+
+Reason: this gives programmers two distinct reach modes through existing syntax. Bare reach is conservative: shadows in unlabeled inner scopes are not exposed. 
+Labeled reach is the explicit opt-in for "give me the live state of this scope, including shadow effects." Generally, a shadow conceptually creates a nested scope, 
+but a labeled reach specifically includes shadow scopes that are directly within the labeled scope.
+
+
+11. The colon is uniformly the scope-qualification operator
+-----------------------------------------------------------
+
+"filename:foo" reaches into a file scope. 
+"namespace:foo" reaches into a namespace. 
+"MyClass:foo" reaches into a class scope. 
+"label:foo" reaches into a labeled block.
+"Type x = ..." followed by ":Base" qualifies a base class in inheritance. 
+"name : type" separates name from type in declarations.
+
+The same operator, the same meaning everywhere: "look up the right-hand identifier in the scope named by the left-hand identifier." Several related dot-vs-colon 
+decisions follow from this principle.
+
+
+12. xmc has no LLVM
+-------------------
+
+The compiler pipeline is Lexer → Parser → Morpher → Reviewer → Coder → Linker, all custom. There is no general-purpose optimizer.
+
+This means optimization decisions must be assigned to specific stages:
+
+- Definite-assignment analysis lives in the Morpher (it already walks the symbol graph and knows refinement-level facts about every variable).
+- Dead-code elimination and the redundant-zero pruning live in the Reviewer (it cleans up after the Morpher's analysis).
+- The Coder emits what prior stages told it to emit; it does not do analysis.
+
+Practical implication: optimizations that LLVM would do for free have to be added to xmc's compiler one at a time. The first version of the compiler can be 
+conservative (don't try to prove definite-assignment; just zero everything that could need it), with optimizations as later passes. 
+[edit: No, let's be conservative by only zero-ing things where it is easy to determine that they need it.]
+
+
+PENDING DESIGN QUESTIONS
+========================
+
+These are decisions made informally during design conversations but not yet pinned down in the language document, or aspects of decisions where
+the rule was settled but corner cases remain.
+
+ 1. Concurrency interaction with "is" narrowing. When the outer variable is concurrent, another thread could in principle morph the variant after an "is" 
+    check fired but before the narrowing-dependent code finishes. This is a real race. xmc has no detailed concurrency story yet (§20 is a stub of sorts); the
+    narrowing rule itself is correct under any concurrency story, but the guarantees about narrowing remaining valid depend on the concurrency primitives.
+    
+[edit: There is no "race" per se? Morphing doesn't happen at run time? The "is" check simply tells us which tagged member is in play at run time.
+The refinement masks of a variant, including singular vs concurrent, apply to the variant and its members. If a variant is concurrent, its tag is atomic,
+and if its members can be atomic they are, otherwise they're guarded.] 
+
+ 2. Calling convention for materialized generator handles. "Generator<T>" carries a function pointer to a boxed ".next()". The exact ABI for that boxed call 
+    has not been specified. Worth pinning down before the Coder is implemented for §18.
+
+[edit: Well, .next() is a function call that takes no parameters and returns a value of type T. I'm not sure what more we can say about it?]
+
+ 3. Switch and case construct. Sketched in the Miscellaneous Notes in Appendix B. 
+    
+    Open questions: 
+        - exhaustiveness checking against variant tag sets, 
+        - fall-through behavior (default: no), 
+        - whether "switch" can yield a value, 
+        - binding syntax for variant cases, 
+        - integration with "is". 
+
+[edit: 
+
+re: Exhaustiveness checking: Are you talking about an is Finished check? See is checking below.
+
+Fall-through: I know a lot of programmers hate switch fall-through, they say it causes a lot of terrible bugs. I don't find that to be case, I find fall-through to be
+very useful. Maybe we can compromise - I want a way to specify that multiple cases map to the same code. But maybe we use commas:
+
+switch(n) {
+    1, 2, 3: DoThis();                      // Hmm, one statement-body per case list. No "break" needed. I like that. I think I'm going to edit Appendix B.
+    4, 5: { DoThat(); AndTheOther(); }      
+    *: IfAllElsFails();
+}
+
+re: is checking:
+
+switch(typeof(v)) {
+    Captain:    HandleUser(v);
+    Ship:       HandleShip(v);              // or any subclass... can we do that? How? Does typeof(thing) == BaseClass work if thing is DerivedClass? 
+    Shot:       HandleShot(v);                    
+}                                           // no default case specified - if v is something else, don't do anything.
+
+I have an idea: 
+
+    typeof(thing) == BaseClass              // true if thing is DerivedClass
+    typeof(thing) === BaseClass             // false if thing is DerivedClass. We might also want to do a few other things ===.
+
+
+switch(captainList.find(thisCaptain)) {
+    NotFoundError:  UI:ShowMessage(msgBenched);                     // possible variant value - do nothing
+    playersCaptain: UI:ShowMessage(msgYourUp);                      // another possible variant value
+    *:              UI:ShowMessage(GetIsUpMessage(thisCaptain));
+}
+
+What is the value of a NotFoundError? Can it be NotFoundError? So we could use "if (v == NotFoundError)" interchangebly with "if (v is NotFoundError)" because 
+in the first case, we're asking about the value/instance and in the second we're asking about the type/class? Not sure about that.
+
+But failing that, we could use an expression case:
+
+switch(captainList.find(thisCaptain)) {
+    typeof(it) == NotFoundError:    UI:ShowMessage(msgBenched);
+    ..
+}
+
+re: expressions as cases:
+
+switch(v) {
+    ConditionRed(v):    HandleRed(v);       // boolean expression cases involving the switch key are allowed, but the code costs more; simple types are preferred
+    ConditionBlue(v):   HandleBlue(v);
+}
+
+Can we allow declaration-assignments as switch keys? That would be nice, I would like to do that. Even though statements don't usually return values.
+
+switch(isUp = captainList.find(thisCaptain)) { .. use "isUp" instead of "it".. }
+
+]
+
+ 4. Loops section content.
+
+    §10 is currently a stub. The forms (for, for-in, while, do-while) exist in the BNF; the section needs to write them up with the variant-routing rules for 
+    "while (var x = expr)" and the merger semantics for "for (x in expr)".
+   
+[Let's draft it.]
+
+ 5. Arrays.
+
+    Mentioned in passing throughout the doc; never formally introduced. The "i32 a[5] = { 0 };" initializer syntax is implied but not specified. Worth a section.
+
+[Let's draft that one, too.]
+
+ 6. Enums.
+   
+    Used in §5c ("TailStates:Wagging") but not formally defined. Likely a short section establishing the syntax and the enum-name-as-scope rule (so "EnumName:value" 
+    is consistent with the colon-uniformity rule).
+
+[Where should it go? Do we need to renumber again?]
+
+ 7. Whether reach can address shadows declared in unlabeled-but-nested scopes inside a labeled scope.
+    Current rule: no. Reach addresses the immediate labeled scope's bindings, not the bindings of scopes inside it. 
+    A shadow in an unlabeled if-then-else inside a labeled block is not addressable through the labeled reach. 
+    To address it, label its scope too. This is internally consistent but worth confirming during §10/§11 drafting.
+
+[Yeah, I think if I want to address a shadow or a nest within a nest, I can label the scope I want to address. That just seems more clear to me.]
+
+
+HOW TO USE THIS DOCUMENT
+========================
+
+When drafting new sections of the language doc:
+
+ -  Read the relevant principles (above) and check whether the new section's defaults align with them. Specifically: are you imposing costs that weren't asked for? 
+    Are you inferring something that should be explicit?
+
+ -  Check the "Key Decisions" list for related precedents. The same argument that produced one rule often produces another.
+
+When proposing changes to existing rules:
+
+ -  Find the rule's entry in Key Decisions and read its reasoning. If the reasoning still applies, the rule should not change. If circumstances have shifted, update 
+    both the rule and its rationale here.
+
+When facing a new design question:
+
+ -  Check the Pending list to see if it's already half-decided.
+ -  Run the candidates through the principles. Eliminate ones that violate principles unless there's a strong reason. 
+ -  Document the new decision here when settled, with reasoning that future readers can audit.
+
+This document should grow as the language grows, and should be read alongside the language doc when significant design questions arise.

@@ -168,9 +168,11 @@
   <ItemGroup>
     <Text Include="doc\AI dumps.txt" />
     <Text Include="doc\AI_conversation_journal.txt" />
+    <Text Include="doc\design_rationale.txt" />
     <Text Include="doc\journal.txt" />
     <Text Include="doc\ProjectContext.txt" />
-    <Text Include="doc\The xmc programming language.txt" />
+    <Text Include="doc\The XMC Programming Language.txt" />
+    <Text Include="doc\The xmc programming language - rev 01.txt" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Builder.h" />
