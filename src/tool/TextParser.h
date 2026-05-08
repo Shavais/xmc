@@ -16,13 +16,11 @@ using std::string_view;
 using std::vector;
 
 
-namespace data
-{
-	extern thread_local bool BraceMatchError;
-}
-
 class TextParser
 {
+public:
+	bool BraceMatchError = false;
+
 private:
 	string_view view_;
 
@@ -250,7 +248,7 @@ public:
 	// returns a stringview containing the content of a curly brace pair which is at the current parser position.
 	// advances the parser view's start pointer just past the ending brace.
 	string_view ReadBracedContent(char startbrace = '{', char endbrace = '}') {
-		data::BraceMatchError = false; 
+		BraceMatchError = false; 
 		
 		uint64_t start = view_.find(startbrace);
 		if (start == string_view::npos) return {};
@@ -280,7 +278,7 @@ public:
 		{
 			result = view_.substr(start + 1);
 			view_.remove_prefix(view_.size());
-			data::BraceMatchError = true;
+			BraceMatchError = true;
 		}
 
 		return result;

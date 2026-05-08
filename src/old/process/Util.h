@@ -7,7 +7,7 @@ namespace fs = std::filesystem;
 
 namespace process
 {
-	std::string FastLoadFile(const std::filesystem::path& path);
+	// std::string FastLoadFile(const std::filesystem::path& path);
 
 	void RemoveFile(const std::string& pathname);
 

@@ -1,4 +1,4 @@
-; xmc Language Grammar (Tentative BNF, Revision 1.6)
+; xmc Language Grammar (Tentative BNF, Revision 1.7)
 ;===================================================
 ; Notation:
 ;   ::=      definition
@@ -11,20 +11,27 @@
 ;            (whitespace is allowed before and after such groups)
 ;   UPPER    lexer token (defined in the Tokens section at the bottom)
 ;
-; Namespace separator: ":" (same character as vault qualifier and first character
-; of ":="; parser disambiguates by context — see Qualified Names section).
+; Dot vs Colon (Key Decision #11): The dot "." always operates on a value;
+; the colon ":" always operates on a scope or names a relationship between
+; scopes. The parser disambiguates by symbol-table context.
 ;
-; ":" is used as:
+; The colon is used as:
 ;   - The first character of ":=" (reference assignment, a single two-character token)
 ;   - Vault qualifier in a variable declaration: var x:arenaname
-;   - Inheritance qualifier when declaring structs and classes
+;   - Inheritance qualifier when declaring structs and classes: class Dog : Animal
 ;   - An extern qualifier in an extern declaration: kernel32:WriteFile(..)
-;   - A delimiter between the segments of a namespace path
+;   - A delimiter between segments of a namespace path: filename:foo
+;   - A class-scope qualifier for static and once members: ClassName:Member
+;   - An enum-scope qualifier for named values: EnumName:ValueName
+;   - A label/case terminator: { :loop ... } and case-label expressions
 ;
-; "." is member access. ":" is namespace path separator. The parser
-; disambiguates by symbol table context: if the leftmost identifier resolves
-; as a namespace name it is a namespace path segment; if it resolves as a
-; value it is member access.
+; The dot is used as:
+;   - Member access on a value: instance.member, struct.field
+;   - Pointer member access (auto-dereferenced for raw and arc pointers)
+;
+; "*" and "&" are context-sensitive:
+;   In a type position  -> ptr-type constructors (*T, &T)
+;   In an expression    -> multiplication and bitwise-and
 ;
 ;============================================================================
 ; TOP LEVEL
@@ -36,12 +43,13 @@ program
 top-level-declaration
     ::= arena-declaration
     | class-declaration
+    | enum-declaration
     | error-declaration
     | extern-declaration
     | function-declaration
     | namespace-declaration
-    | nested-scope
     | struct-declaration
+    | use-directive
     | variable-declaration
 
 ;============================================================================
@@ -59,7 +67,10 @@ arena-declaration
 ;----------------------------------------------------------------------------
 
 class-declaration
-    ::= "class" IDENTIFIER [ ":" base-class-list ] "{" { class-member } "}"
+    ::= "class" IDENTIFIER [ ":" base-class-list ] "{" { class-member } "}" [ IDENTIFIER ] ";"
+
+; The optional trailing IDENTIFIER, when present, declares an instance of
+; the class in the surrounding scope, parallel to the struct form.
 
 base-class-list
     ::= qualified-name { "," qualified-name }
@@ -71,7 +82,7 @@ class-member
     | function-member
 
 data-member
-    ::= type-specifier <IDENTIFIER> [ UGLY-MASK ] [ "=" expression ] ";"
+    ::= [ "once" ] type-specifier <IDENTIFIER> { array-suffix } [ UGLY-MASK ] [ "=" expression ] ";"
 
 constructor-declaration
     ::= IDENTIFIER "(" [ parameter-list ] ")" function-body
@@ -82,7 +93,12 @@ destructor-declaration
 ; function-body is defined under FUNCTIONS below.
 
 function-member
-    ::= [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
+    ::= [ "static" ] [ type-specifier ] IDENTIFIER "(" [ parameter-list ] ")" function-body
+
+; "once" data members declare class-level storage shared across all instances,
+; lazily initialized on first reach (section 26g). "static" function members
+; belong to the class scope, take no implicit receiver, and are called with
+; the colon qualifier: ClassName:Member() (section 26h).
 
 ;----------------------------------------------------------------------------
 ; TYPE SPECIFIERS
@@ -154,7 +170,9 @@ base-type
     | "zs8" | "zs16" | "zs32"
     | "s8" | "s16"
     | "utf8" | "us"
+    | "Class"                     ; built-in type produced by typeof(); section 12f
     | container-type
+    | generic-type                ; parameterized: array<T>, list<T>, Generator<T>, ...
     | "arena"
     | "heap"
 
@@ -165,6 +183,7 @@ base-type
 container-type
     ::= "btree"
     | "list"
+    | "array"
     | "hashmap"
     | "hashset"
     | "mpmc_queue"
@@ -173,6 +192,24 @@ container-type
     | "spmc_queue"
     | "stack"
     | "queue"
+
+; Generic types are parameterized by one or more type-specifiers in angle
+; brackets. The grammar accepts angle-bracket parameterization on any of the
+; container keywords above and on user-defined names; the morpher validates
+; whether the named type actually supports parameterization.
+;
+; Examples:
+;   array<i32>           array<var>          array<ref>
+;   list<i64>            list<Generator<u8>>
+;   Generator<list>      Generator<MyType>
+;   array<array<i32>>    hashmap<zs8, i32>
+
+generic-type
+    ::= ( container-type | "Generator" | qualified-name ) "<" type-list ">"
+
+; The open-array suffix "[]" appears only in FFI / pointer-target positions
+; to express "array of T, size determined elsewhere" — see ptr-type below
+; and section 9j. It is not a standalone type.
 
 ;----------------------------------------------------------------------------
 ; REFINEMENT QUALIFIERS
@@ -215,10 +252,12 @@ high-refinement-qualifier    ; at least one space is required after the qualifie
     | "variant "
 
 ; Pointer constructors — no whitespace allowed between * or & and the type.
+; The optional "[]" suffix marks a pointer to an open-size array, used in FFI
+; to express the equivalent of C's "T*" parameter type (see section 9j).
 
 ptr-type
-    ::= <"*"> <type-specifier>    ; raw pointer
-    | <"&"> <type-specifier>      ; arc pointer
+    ::= <"*"> <type-specifier> [ <"["> <"]"> ]    ; raw pointer, optionally to open array
+    | <"&"> <type-specifier> [ <"["> <"]"> ]      ; arc pointer, optionally to open array
 
 ;============================================================================
 ; FUNCTION TYPES AND REFERENCES
@@ -233,7 +272,7 @@ ptr-type
 ;   fn is function(i32, i32)          -- is-check, return type omitted
 ;   fn is function(i32, i32) -> b     -- is-check, return type specified
 ;
-; In an is-check the return type is optional (see postfix-op and section 23i).
+; In an is-check the return type is optional (see postfix-op and section 18i).
 ; In a declaration it is always optional (null is the implicit return type).
 
 function-type
@@ -280,21 +319,20 @@ error-declaration
 ;----------------------------------------------------------------------------
 
 extern-declaration
-    ::= "extern" IDENTIFIER "." IDENTIFIER "(" [ extern-parameter-list ] ")"
-    [ "->" type-specifier ":" IDENTIFIER ] ";"
-
-; The first IDENTIFIER is the library name, the second is the function name.
-; The trailing ":" IDENTIFIER after the return type names the return register.
+    ::= "extern" qualified-name "(" [ extern-parameter-list ] ")"
+    [ "->" type-specifier [ ":" IDENTIFIER ] ] ";"
 
 extern-parameter-list
     ::= extern-parameter { "," extern-parameter }
 
 extern-parameter
-    ::= IDENTIFIER ":" type-specifier [ "->" IDENTIFIER ]
+    ::= IDENTIFIER "->" type-specifier [ ":" IDENTIFIER ]
 
-; The trailing IDENTIFIER names the register (rcx, rdx, r8, r9, etc.) the
-; argument is passed in. Parameters with no register name are passed on the
-; stack.
+; The "-> type : register" form spells the type and its register binding the
+; same way for parameters and for the return. Parameters lead with the name;
+; the return has no name. The register binding is optional in both positions:
+; an extern parameter without ": register" is passed on the stack, and an
+; extern with no return-register clause names a void-returning extern.
 
 ;============================================================================
 ; FUNCTIONS
@@ -324,10 +362,10 @@ parameter-list
 ; unresolved "var" parameters, but without subsequent morphing).
 
 parameter
-    ::= { high-refinement-qualifier } [ type-specifier ] <IDENTIFIER> [ <UGLY-MASK> ]
+    ::= [ parameter-type-specifier ] <IDENTIFIER> { array-suffix } [ <UGLY-MASK> ]
 
 parameter-with-default
-    ::= { high-refinement-qualifier } [ type-specifier ] <IDENTIFIER> [ <UGLY-MASK> ] "=" expression
+    ::= [ parameter-type-specifier ] <IDENTIFIER> { array-suffix } [ <UGLY-MASK> ] "=" expression
 
 variadic-parameter
     ::= <IDENTIFIER> <"...">
@@ -355,10 +393,12 @@ statement
     ::= arena-declaration
     | variable-declaration
     | nested-function-declaration
+    | use-directive
     | if-statement
     | for-statement
     | while-statement
     | do-statement
+    | switch-statement
     | spawn-statement
     | labeled-block
     | error-block
@@ -366,6 +406,7 @@ statement
     | return-statement
     | yield-statement
     | break-statement
+    | continue-statement
     | assignment-statement
     | expression-statement
 
@@ -383,18 +424,81 @@ if-statement
 
 for-statement
     ::= "for" "(" for-init ";" [ expression ] ";" [ expression ] ")" statement
-    | "for" "(" [ type-specifier ] IDENTIFIER "in" expression ")" statement
+    | "for" "(" [ "var" | type-specifier ] for-bind-target "in" expression ")" statement
 
 for-init
     ::= variable-declaration
     | expression-statement
     | type-specifier IDENTIFIER "=" expression
 
+; for-bind-target supports tuple unpacking when the source produces tuples
+; (such as the standard-library zip() generator). For ordinary single-value
+; iteration, just one identifier appears.
+
+for-bind-target
+    ::= IDENTIFIER { "," IDENTIFIER }
+
 while-statement
-    ::= "while" "(" expression ")" statement
+    ::= "while" "(" while-cond ")" statement
+
+; while-cond is either a plain boolean expression, or a binding form that
+; declares a loop-local name and uses the bound value's truthiness as the
+; loop condition. In the binding form, an exhaustion signal from a generator-
+; handle method (e.g. gen.next()) becomes the loop-exit edge instead of
+; binding to the name. See section 11d.
+
+while-cond
+    ::= expression
+    | ( "var" | type-specifier ) IDENTIFIER "=" expression
 
 do-statement
     ::= "do" statement "while" "(" expression ")" ";"
+
+;----------------------------------------------------------------------------
+; SWITCH AND CASE
+;----------------------------------------------------------------------------
+;
+; The switch statement matches a value against an ordered set of cases and
+; runs the body of the first matching case. There is no fall-through.
+; See section 12.
+;
+; The switch key may be plain (the value is referenced via the implicit
+; binding "it" in expression-form cases) or named (declared with var or a
+; type-specifier in the parens, to introduce a name visible in every case
+; body and expression-form label):
+;
+;   switch (n)                      ; plain
+;   switch (var result = expr)      ; named binding
+;
+; Case labels are one of:
+;   - Value-list: a comma-separated list of expressions whose value is known
+;     at the comparison point. Matches if the key equals any value (==).
+;   - Expression: a boolean expression that mentions "it" or the named
+;     binding. Matches if the expression evaluates truthy.
+;   - Default ("*"): matches any key the previous cases did not match. At
+;     most one per switch.
+;
+; The compiler distinguishes the value-list and expression forms by whether
+; the case-label expression(s) reference "it" or the named binding.
+
+switch-statement
+    ::= "switch" "(" switch-key ")" "{" { switch-case } [ default-case ] "}"
+
+switch-key
+    ::= expression
+    | ( "var" | type-specifier ) IDENTIFIER "=" expression
+
+switch-case
+    ::= case-label ":" case-body
+
+case-label
+    ::= expression { "," expression }
+
+default-case
+    ::= "*" ":" case-body
+
+case-body
+    ::= statement
 
 ;----------------------------------------------------------------------------
 ; LABELED BLOCKS AND REACHING
@@ -465,6 +569,14 @@ yield-statement
 
 break-statement
     ::= "break" [ ":" IDENTIFIER ] ";"
+
+continue-statement
+    ::= "continue" [ ":" IDENTIFIER ] ";"
+
+; A bare break inside a switch nested in a loop exits the switch, not the
+; loop. To exit the loop from inside the switch, use a labeled break with
+; the loop's label. continue is a loop construct; a continue inside a
+; switch case applies to an enclosing loop.
 
 expression-statement
     ::= expression ";"
@@ -567,6 +679,7 @@ unary-expr
     | "--" unary-expr
     | <"@"> <unary-expr>    ; address-of: yields ptr-type one level deeper
     | <"$"> <unary-expr>    ; dereference: yields the value pointed at
+    | "new" function-call   ; explicit heap construction; section 26a
 
 postfix-expr
     ::= primary-expr { postfix-op }
@@ -576,6 +689,7 @@ postfix-op
     | <"->"> <IDENTIFIER>                     ; dereference and access member
     | "[" expression "]"                       ; subscript
     | "[" [ expression ] ":" [ expression ] "]" ; slice
+    | "[" [ expression ] ":" [ expression ] ":" [ expression ] "]" ; slice with stride
     | "(" [ argument-list ] ")"               ; call
     | "++"
     | "--"
@@ -591,7 +705,10 @@ postfix-op
     ; Parameter types must match exactly. If the return type is omitted, the
     ; call is made and the return value is assigned to the left-hand side; if
     ; the actual return type is incompatible with the lhs, the lhs receives
-    ; null. See section 23i for full semantics.
+    ; null. See section 18i for full semantics.
+    ;
+    ; The slice form supports an optional stride: a[start:stop:stride].
+    ; Negative strides reverse: a[::-1] reverses the sequence.
 
 primary-expr
     ::= literal
@@ -602,10 +719,19 @@ primary-expr
     | "(" expression ")"
     | anonymous-function
     | list-expr
-    | dict-expr
+    | brace-expr                ; anonymous struct, dict, or curly-list literal
     | list-comprehension
+    | dict-comprehension
     | range-expression
+    | typeof-expr
     | function-ref-expr
+
+typeof-expr
+    ::= "typeof" "(" expression ")"
+
+; typeof returns the runtime class of its operand as a value of the built-in
+; type Class. Class values can be compared with == and != (exact identity,
+; not inheritance) and are first-class in switch keys. Section 12f.
 
 ; __missing_attribute is a thread-local built-in flag. It is set to true after
 ; every runtime attribute lookup that finds no attribute, and cleared after
@@ -633,20 +759,32 @@ primary-expr
 ;   if (__missing_attribute) { ... }
 
 ;============================================================================
-; STRUCT INITIALIZATION EXPRESSIONS
+; COMPOSITE LITERALS
 ;----------------------------------------------------------------------------
 ;
-; Square brackets initialize struct members positionally.
-; Curly braces initialize struct members by name (key must be an IDENTIFIER).
-; When the assignment target type is never resolved:
-;   square brackets  -> list
-;   curly braces     -> hashmap
+; Square-bracket literal -> list (always).
+; Curly-brace literal    -> one of:
+;     - empty dict (when "{}")
+;     - anonymous struct (when all elements are ".field = value" form)
+;     - dict (when all elements are "key : value" form)
+;     - list (when no elements have keyed form; in inferred-type context)
+;     - aggregate initializer (in typed context — array elements, struct
+;       fields, etc.; the declared type tells the compiler what to do)
+;
+; Mixing the three element forms within a single brace literal is an error.
+; See section 5e.
 
 list-expr
-    ::= "[" [ expression { "," expression } ] "]"
+    ::= "[" [ expression { "," expression } [ "," ] ] "]"
 
-dict-expr
-    ::= "{" [ dict-entry { "," dict-entry } ] "}"
+brace-expr
+    ::= "{" "}"                                                    ; empty dict
+    | "{" struct-field-init { "," struct-field-init } [ "," ] "}"  ; anonymous struct
+    | "{" dict-entry { "," dict-entry } [ "," ] "}"                ; dict
+    | "{" expression { "," expression } [ "," ] "}"                ; list / initializer
+
+struct-field-init
+    ::= "." IDENTIFIER "=" expression
 
 dict-entry
     ::= expression ":" expression
@@ -667,19 +805,32 @@ argument-list
 
 argument
     ::= [ IDENTIFIER "=" ] expression
-    | list-expr    ; positional struct initializer passed directly
-    | dict-expr    ; named struct initializer passed directly
+    | list-expr     ; positional struct initializer passed directly
+    | brace-expr    ; named struct initializer passed directly
 
 ;----------------------------------------------------------------------------
 ; COMPREHENSIONS AND RANGES
 ;----------------------------------------------------------------------------
+;
+; Comprehensions follow Python syntax. A list comprehension produces a list;
+; a dict comprehension produces a dict (and supports tuple-unpacking targets
+; for sources like zip()). The morpher initializes the result with default
+; rmasks and lets usage drive subsequent morphing.
 
 list-comprehension
-    ::= "[" expression "for" [ type-specifier ] IDENTIFIER "in" expression
-    [ "if" expression ] "]"
+    ::= "[" expression "for" [ "var" | type-specifier ] for-bind-target
+    "in" expression [ "if" expression ] "]"
+
+dict-comprehension
+    ::= "{" expression ":" expression "for" [ "var" | type-specifier ] for-bind-target
+    "in" expression [ "if" expression ] "}"
 
 range-expression
-    ::= "range" "(" expression [ "," expression ] ")"
+    ::= "range" "(" expression [ "," expression [ "," expression ] ] ")"
+
+; range(stop), range(start, stop), or range(start, stop, step). It is a
+; standard-library generator returning successive integers; the handle is
+; just a generator handle (section 19c).
 
 ;----------------------------------------------------------------------------
 ; LITERALS
@@ -709,12 +860,16 @@ KEYWORD
     | "rigid" | "fluid" 
     | "serial" | "concurrent" 
     | "singular" | "variant"
-    | "struct" | "class" | "error" | "extern" | "weak"
+    | "struct" | "class" | "enum" | "error" | "extern" | "weak"
+    | "use"
+    | "once" | "static" | "new"
     | "arena" | "heap" | "function"
     | "null" | "me" | "is" | "true" | "false"
-    | "__missing_attribute"
+    | "typeof" | "Class" | "Generator"
+    | "__missing_attribute" | "__carry" | "__overflow"
     | "if" | "then" | "else" | "for" | "while" | "do" | "in"
-    | "return" | "yield" | "break" | "spawn"
+    | "switch" | "case"
+    | "return" | "yield" | "break" | "continue" | "spawn"
     | "b"
     | "i8" | "i16" | "i32" | "i64"
     | "u8" | "u16" | "u32" | "u64"
@@ -724,7 +879,7 @@ KEYWORD
     | "zs8" | "zs16" | "zs32"
     | "s8" | "s16"
     | "utf8" | "us"
-    | "list" | "queue" | "stack" | "btree" | "hashset" | "hashmap"
+    | "list" | "array" | "queue" | "stack" | "btree" | "hashset" | "hashmap"
     | "spsc_queue" | "spmc_queue" | "mpsc_queue" | "mpmc_queue"
     | "range"
     | "@"     ; address-of operator
@@ -817,10 +972,52 @@ BLOCK-COMMENT ::= "/*" { any character } "*/"
 ; member list in declaration order.
 
 struct-declaration
-    ::= "struct" [ IDENTIFIER ] "{" { struct-member } "}" [ IDENTIFIER ] ";"
+    ::= "struct" [ IDENTIFIER ] [ ":" base-class-list ] "{" { struct-member } "}" [ IDENTIFIER ] ";"
+
+; The trailing IDENTIFIER, when present, declares an instance of the struct
+; in the surrounding scope. The optional ":" base-class-list is the struct
+; inheritance form (section 23d / section 25); it parallels class inheritance.
 
 struct-member
-    ::= type-specifier <IDENTIFIER> [ UGLY-MASK ] [ "=" expression ] ";"
+    ::= type-specifier <IDENTIFIER> { array-suffix } [ UGLY-MASK ] [ "=" expression ] ";"
+
+;============================================================================
+; ENUM DECLARATIONS
+;----------------------------------------------------------------------------
+;
+; An enum declares a named scope containing a set of named integer values.
+; Per the dot-vs-colon rule, values are reached via "EnumName:ValueName".
+; The underlying integer type defaults to the smallest unsigned int that fits
+; all of the declared values; an explicit override uses the angle-bracket
+; form, e.g. enum<i32> ErrCode { OK, NotFound, Denied };
+;
+; Each value name may optionally be assigned a constant integer expression;
+; unspecified values take the previous value plus one, with the first
+; defaulting to zero.
+
+enum-declaration
+    ::= "enum" [ "<" integer-type ">" ] IDENTIFIER "{" enum-value-list "}" ";"
+
+enum-value-list
+    ::= enum-value { "," enum-value } [ "," ]
+
+enum-value
+    ::= IDENTIFIER [ "=" expression ]
+
+integer-type
+    ::= "i8" | "i16" | "i32" | "i64"
+    | "u8" | "u16" | "u32" | "u64"
+
+;----------------------------------------------------------------------------
+;
+; A "use" directive brings an enum's values into the current scope's lookup
+; chain so they may be referenced without the EnumName: qualifier. Lookup
+; order is local declarations, then names brought in by use, then enclosing
+; scopes. Two use directives in the same scope that import a colliding value
+; name make that specific name ambiguous; references must then qualify.
+
+use-directive
+    ::= "use" IDENTIFIER ";"
 
 ;============================================================================
 ; VARIABLE DECLARATIONS
@@ -848,8 +1045,25 @@ struct-member
 ; "var" declares a variable that infers its type and may continue to morph.
 
 variable-declaration
-    ::= { low-refinement-qualifier } ( "var" | "ref" | type-specifier ) <IDENTIFIER> [ <UGLY-MASK> ] [ ":" vault-specifier ]
+    ::= [ "once" ] { low-refinement-qualifier } ( "var" | "ref" | type-specifier ) <IDENTIFIER> { array-suffix } [ <UGLY-MASK> ] [ ":" vault-specifier ]
     [ ( "=" expression | ":=" lvalue-expression ) ] ";"
+
+; The bracket-suffix form (i32 a[5]) attaches the array size to the variable,
+; not the type — so "i32 a[5], b;" declares a five-element array a and a
+; single i32 b, not two arrays. See section 9.
+; Multiple suffixes stack for multi-dimensional arrays: i32 m[3][4].
+; The size expression may be omitted when an initializer determines it
+; (i32 a[] = { 1, 2, 3 };), and may be a runtime expression — it is fixed
+; at declaration time, not required to be a compile-time constant.
+;
+; "once" is permitted on any local variable declaration (section 26a). The
+; storage initializes lazily on first reach, persists for program lifetime,
+; and is shared across every invocation of the enclosing function. The
+; combination "immutable once" is permitted for "compute once on first
+; access, then never change" (section 26f).
+
+array-suffix
+    ::= "[" [ expression ] "]"
 
 vault-specifier
     ::= IDENTIFIER

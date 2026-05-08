@@ -1,4 +1,5 @@
 #include "pch/pch.h"
+#include "SourceLoader.h"
 
 #include <chrono>
 #include <filesystem>
@@ -17,7 +18,11 @@ namespace xmc {
 
 	std::mutex mapMutex;
 
-	std::string FastLoadFile(const std::filesystem::path& path) {
+	SourceLoader::SourceLoader(ConfigSection& projectFileReader) : config_(projectFileReader)
+	{
+	}
+
+	std::string SourceLoader::FastLoadFile(const std::filesystem::path& path) {
 
 		HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) return "";
@@ -43,9 +48,7 @@ namespace xmc {
 	}
 
 	// Helper to walk the tree and identify files
-	void WalkFsTree(const fs::path& root, const std::string& extension,
-		std::unordered_map<std::string, data::FileInfo>& registry,
-		BS::thread_pool<>& pool) {
+	void SourceLoader::WalkFsTree(const fs::path& root, const std::string& extension, std::unordered_map<std::string, FileInfo>& registry, BS::thread_pool<>& pool) {
 		if (!fs::exists(root)) return;
 
 		for (const auto& entry : fs::directory_iterator(root)) {
@@ -62,39 +65,37 @@ namespace xmc {
 		}
 	}
 
-	void LoadSourceFiles() {
+	void SourceLoader::LoadSourceFiles(CmdLineArgs& args) {
 		auto start = std::chrono::high_resolution_clock::now();
 
 		// Setup Paths and Pool
-		std::string srcRootStr = std::get<std::string>(data::ProjectFile["SourceRoot"]);
-		std::string intPathStr = std::get<std::string>(data::ProjectFile["IntPath"]);
-		fs::path srcRoot = fs::absolute(srcRootStr);
-		fs::path intPath = fs::absolute(intPathStr);
+
+		
 		BS::thread_pool<> pool;
 
 		// Scan Filesystem (pool thread per file)
-		WalkFsTree(srcRoot, ".xm", data::SourceFiles, pool);
-		if (!data::CmdLineArgs.Full) WalkFsTree(intPath, ".xmo", data::ObjectFiles, pool);
+		WalkFsTree(srcRoot, ".xm", SourceFiles, pool);
+		if (!args.Full) WalkFsTree(intRoot, ".xmo", ObjectFiles, pool);
 		pool.wait();
 
 		// Identify and Load Modified Sources (pool thread per folder)
-		for (auto& [name, srcInfo] : data::SourceFiles) {
+		for (auto& [name, srcInfo] : SourceFiles) {
 			bool needsRebuild = false;
 
-			if (data::CmdLineArgs.Full) {
+			if (args.Full) {
 				needsRebuild = true;
 			}
 			else {
-				auto it = data::ObjectFiles.find(name);
-				if (it == data::ObjectFiles.end() || srcInfo.lastWriteTime > it->second.lastWriteTime) {
+				auto it = ObjectFiles.find(name);
+				if (it == ObjectFiles.end() || srcInfo.lastWriteTime > it->second.lastWriteTime) {
 					needsRebuild = true;
 				}
 
 				if (needsRebuild) {
-					data::ModifiedSources.push_back(name);
+					ModifiedSources.push_back(name);
 
 					// Launch parallel load task
-					pool.detach_task([&info = srcInfo]() {
+					pool.detach_task([this, &info = srcInfo]() {
 						std::string text = FastLoadFile(info.fullPath);
 						if (!text.empty()) {
 							std::lock_guard<std::mutex> lock(mapMutex);
@@ -105,10 +106,11 @@ namespace xmc {
 			}
 			pool.wait();
 
-			auto end = std::chrono::high_resolution_clock::now();
-			std::chrono::duration<double> diff = end - start;
-			osdebug << "LoadModifiedSources: " << data::ModifiedSources.size() << " files loaded in " << std::fixed << std::setprecision(3) << diff.count() << " seconds." << endl;
 		}
+
+		auto end = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> diff = end - start;
+		osdebug << "LoadModifiedSources: " << ModifiedSources.size() << " files loaded in " << std::fixed << std::setprecision(3) << diff.count() << " seconds." << endl;
 	}
 
 }

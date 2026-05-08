@@ -1,4 +1,4 @@
-#include "pch.h"
+#include "pch/pch.h"
 #include "experiments.h"
 
 #include <iostream>
@@ -488,7 +488,7 @@ void RunTestPipeline() {
 	info.fullPath = "C:/Shavais/Projects/C++/xmc/tests/xm/1_Declarations/" + testname + ".xm";
 
 	// 2. Read the source code using your Fast Memory-Mapped File Loader
-	info.sourceText = FastLoadFile(info.fullPath);
+	// info.sourceText = FastLoadFile(info.fullPath);
 
 	if (info.sourceText.empty()) {
 		std::cout << "Test failed: Could not load " + testname + ".xm";

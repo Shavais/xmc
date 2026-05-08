@@ -22,8 +22,7 @@ namespace xmc
 		//
 		// Compile and link timing are logged to the debug stream.
 		// Logger::ErrorOccurred is set if any job fails.
-		static void Build(const CommandLineReader::Args& args,
-			const ProjectFileReader& project);
+		static void Build(const CmdLineArgs& args, const ProjectFileReader& project);
 
 	private:
 		// Resolves the list of .xm source files declared in the project,

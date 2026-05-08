@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include "concurrentqueue.h"
+#include "PipelineQueue.h"
 
 namespace xmc {
 
@@ -224,12 +224,7 @@ namespace xmc {
 		//
 		// Returns a Result whose tokens vector contains every token (including
 		// trivia) in source order.  Check hadErrors for lex-level diagnostics.
-		Result Lex(
-			std::string_view                    filename,
-			std::string_view                    source,
-			moodycamel::ConcurrentQueue<Token>& parserQueue,
-			std::ostream* logStream = nullptr
-		) const;
+		static void Lex(std::string_view filename, std::string_view source, xmc::PipelineQueue<Token>& out, bool writeLog);
 
 	private:
 

@@ -18,9 +18,6 @@
     <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\old\experiments.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\tool\Coff.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -51,12 +48,6 @@
     <ClCompile Include="src\Tester.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\compiler\Refiner.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\compiler\SourceLoader.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\Builder.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -72,6 +63,12 @@
     <ClCompile Include="src\compiler\Xmo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\compiler\Morpher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\compiler\Types.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Text Include="doc\The xmc programming language - rev 01.txt" />
@@ -81,11 +78,9 @@
     <Text Include="doc\ProjectContext.txt" />
     <Text Include="doc\The XMC Programming Language.txt" />
     <Text Include="doc\design_rationale.txt" />
+    <Text Include="doc\Under The Hood.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\old\experiments.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\tool\Coff.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -131,10 +126,7 @@
     <ClInclude Include="src\Tester.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\compiler\Refiner.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\compiler\SourceLoader.h">
+    <ClInclude Include="src\compiler\Morpher.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Builder.h">
@@ -158,6 +150,21 @@
     <ClInclude Include="src\tool\FileMapping.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\compiler\CodeBlock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compiler\PipelineQueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="deps\include\blockingconcurrentqueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compiler\Emitter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compiler\Reviewer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="src\old\tests\hello\hello.xmc" />
@@ -168,5 +175,7 @@
     <None Include="src\old\tests\xm\1_Declarations\02_structs.xm" />
     <None Include="src\old\tests\xm\1_Declarations\03_multi_qualifiers.xm" />
     <None Include="doc\xcm_04.bnf" />
+    <None Include="src\tests\hello\hello.xmc" />
+    <None Include="src\tests\hello\hello.xm" />
   </ItemGroup>
 </Project>

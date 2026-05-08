@@ -3,7 +3,7 @@ Arch = x64
 Type = exe
 EntryFile = hello               # names the .sv file that contains the entry function (defaults to the project name)
 EntryFunc = main                # names entry point function (defaults to main)
-Subsystem = console
+Subsystem = console             
 CRT = static                    # static, dynamic, static-debug, dynamic-debug
 LibPaths = [
     C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64, 
@@ -13,14 +13,17 @@ LibPaths = [
 StaticLibs = [svge.lib]
 DynamicLibs = [kernel32.lib, shell32.lib]
 SourceRoot = .                  # optional, the default is the current working directory
-Sources = [*.xm]                # optional, the default is [*.xm]
+Sources = [*.xm]
 
-[debug:default]                 # a config doesn't have to be debug or release, it can have any name
-DebugSymbols = yes
+[debug:default]                 # a config doesn't have to be "debug" or "release", it can have any name
+DebugSymbols = 1                # not currently implemented, but you can put any string/value pair in the file
 IntPath = .
 OutPath = .
+LexerLog = 1
+ParserLog = 1
+MorpherLog = 1
 
 [release]
-DebugSymbols = no
+DebugSymbols = 0
 IntPath = .
 OutPath = .

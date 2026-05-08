@@ -1,0 +1,2010 @@
+﻿UNDER THE HOOD: THE XMC COMPILER
+================================
+
+This document is for somebody reading the xmc compiler source and trying to follow what each class is for and how the pieces
+fit together. It is a companion to The_XMC_Programming_Language.txt (the language reference, cited herein as XMC §N) and
+design_rationale.txt (why the language is shaped the way it is). Where this document touches a behavior the language reference
+covers in detail — is-checks, refinement narrowing, generic functions, control-flow variants — it cites that section rather
+than restating semantics.
+
+Sections 1 through 5 below describe the pipeline at large, the data structures the stages share, and the codegen and emit 
+machinery. Section 6 covers codegen for the flow-structuring node kinds (conjunctions, error-handling, is-checks) and the 
+cross-cutting machinery (literal patching, the function-call ABI, parameter assignment, the Reviewer's register-assignment 
+discipline). Subsequent sections cover the per-built-in chapters (i32, list, hashmap, queue family, etc.) and a running list 
+of open questions.
+
+1. THE PIPELINE
+===============
+
+The compiler runs one threadpool thread per source file. Within that thread, each compiler stage runs as its own threadpool
+task, with hand-offs between stages described per-stage below. CompileJob (defined in Compiler.h) carries the per-job state —
+source list, intermediate paths, log streams, and the atomic flags ErrorOccurred, ReparseRequired, and ParseTreeScanRequired
+that the stages set and the dispatcher checks.
+
+Three project-wide streams are open through the whole compile: oserror for hard errors, osdebug for warnings and informational
+messages, and a set of per-stage log streams used for golden-file comparison during suite testing. Any stage that writes to
+oserror also sets CompileJob::ErrorOccurred — that flag is a uniform "this job has failed" signal owned by no single stage.
+The per-stage logs are gated by project-file settings (LexerLog, ParserLog, MorpherLog, CoderLog, etc.); when a setting is
+present, the corresponding stage writes a deterministic, line-oriented record of what it saw or did, suitable for diffing
+against a checked-in golden file.
+
+1a. Lexer
+---------
+
+A table-driven Deterministic Finite Automaton. Lexer::Lex takes a filename and the mapped source bytes, and enqueues
+parser-visible tokens onto a moodycamel::ConcurrentQueue<Token> the Parser drains in parallel. When the DFA encounters
+malformed input — unterminated string, invalid character, stray punctuation — it streams an error to oserror with filename,
+line, column, what was expected, and what was found, sets ErrorOccurred, and resynchronizes to the next plausible token start.
+TOK_ERROR is not a parser-visible token kind; the Parser sees only well-formed tokens and is not responsible for cleaning up
+after lexer errors.
+
+The static DFA tables (s_charClass, s_trans, s_keywords) are built once via Lexer::InitTables and shared across all Lexer
+instances. The Token struct carries type, line, col, srcStart, srcLen, and a flags field; FLAG_PRECEDED_BY_SPACE is read by
+the Parser to enforce the no-whitespace rules on the @ and $ operators. When the project file requests a LexerLog, the Lexer
+also writes one line per token (filename:line:col, token type, raw source text), including comments, in the order produced —
+this is the suite-testing comparison surface. The current Lexer.cpp returns vectors instead of streaming through a concurrent
+queue; this is an early, incorrect implementation. After this document, the language doc, and xmc.bnf are finalized for the
+initial version of xmc, the Lexer will be refactored to operate as described here before the Parser is implemented. Lexer
+output is not persisted to the .xmo file — re-lexing is fast enough that caching would only double on-disk size.
+
+1b. Parser
+----------
+
+Consumes tokens off the Lexer's queue and builds a ParseTreeNode tree allocated in the per-file Xmo::arena. The parse tree is
+the spine that every later stage walks (see §2 below). xmc has no programmer-supplied forward declarations and no header
+files: every reference to a name is back-filled at the moment its declaration becomes known. When the Parser encounters a
+reference to a not-yet-declared name, it interns a placeholder Symbol with baseType == Unresolved and creates a Stub
+ParseTreeNode to stand in for the future declaration. Subsequent references to that name subscribe to the Stub the same as to
+any declaration. When the real declaration eventually parses, the Stub is mutated in place into the real declaration kind,
+preserving its accumulated subscriber list. Inserting a Stub on the first reference and mutating it on the eventual
+declaration avoids any ordering requirement between declaration and use within or across files (XMC §3 — global code
+visibility).
+
+The Parser streams its own errors to oserror with filename, line, column, and what was expected. When the project file
+requests a ParserLog, the Parser writes a structural log of the parse-tree shape it built, suitable for golden-file diffing
+in suite tests.
+
+1c. Morpher
+-----------
+
+The merged Typer + Refiner. The Morpher runs one thread per source file. It processes a per-file work queue of parse-tree
+nodes; each entry is a node whose type or refinement state may have changed enough for propagation to its neighbors to be
+worth reattempting. The work queue is fed initially by the Parser (newly created leaves), and afterward by the Morpher itself
+as propagation discovers further work. When the queue is empty the thread sleeps on a condition variable.
+
+Propagation is the Morpher's only output mechanism. When a node resolves further — its baseType narrows from Unresolved to a
+concrete type, or a bit moves between minrmask and maxrmask — the Morpher walks the parent pointer up, asking each ancestor
+whether it can resolve further given the change at the child, and pushing those that can onto the work queue. Some nodes
+declare symbols; when one of those resolves, the Morpher iterates the symbol's subscriber list, and for each subscriber pushes
+work onto the appropriate file's morpher work queue (see §2c on file-boundary handling). Type inference and refinement
+narrowing are interleaved in this single propagation mechanism, because setting a structural refinement bit (Variant, Arc,
+Concurrent, Fluid) is itself a type-level decision: a list whose elements gain Variant has effectively changed shape, and a
+type whose Arc bit goes on has different copy semantics than the same type without it.
+
+The Morpher is also where inlining and generic instantiation happen — when a function symbol's signature finalizes, its
+subscribed call-site stubs are converted, and generic call sites have a deep-copied specialization of the callee's parse tree
+attached. The mechanism is described in §2e.
+
+When the Morpher recognizes an immediate error — type mismatch in a context that admits no further narrowing, an arity
+mismatch with a fully-resolved callee, an explicit pin that conflicts with an inferred refinement bit — it streams to oserror
+and marks the offending node's baseType as Error so dependents propagate the failure silently rather than cascade with noise.
+Conditions that merely haven't resolved yet are not errors and produce no output. When the project file requests a MorpherLog,
+the Morpher writes a record of each propagation step it took.
+
+1d. Pipeline barrier
+--------------------
+
+After all per-file Lexer→Parser→Morpher chains have drained — every Morpher work queue empty, every Morpher thread sleeping —
+the dispatcher reaches a barrier and inspects the break-out flags on CompileJob. ReparseRequired indicates that a structural
+change (a base type morph, or one of the structural refinement bits) reached a Symbol whose declaring xmo had observers in
+the HeadersOnly state — those observers' parse trees may now compile to different node shapes, so their source must be
+re-parsed. ParseTreeScanRequired indicates a non-structural refinement narrowing reached such an observer; in that case the
+parse tree shape is still valid and only the Morpher needs to re-run on the loaded parse tree. The dispatcher computes the
+affected closure (transitive closure of importsFromXmos from the originating xmos), restarts the appropriate prefix of the
+pipeline on that closure, and asserts as an invariant that each restart kind fires at most once per job.
+
+1e. Reviewer
+------------
+
+Per-xmo parallel, runs after the Morpher has converged for that Xmo. Does the codegen-prep
+work that needs converged types but precedes block selection: 
+
+    - inserts conversion nodes where operand types don't match operation expectations
+    - inserts null verb nodes where no conversion is available and prunes the right-hand subtrees under them
+    - assigns parameter ids (registers, stack slots, immediates, RIP-relative literals, SymbolKeys, jump labels) to every noun and value-producing verb in each function
+    - for fallible call sites, decides listening_flag, dispatch_target, return_used_flag, and routed_kinds; builds each error-block's dispatch table from its on-error 
+      clauses; assigns it-binding stack slots for clauses; decides per fallible function whether a listening flavor, a discarding flavor, or both must be compiled — see §6.5
+    - writes per-verb-node parameter lists into payloads for the Coder to consume
+    - computes per-function totalStackSize for the Emitter's prologue back-patch — for fallible functions compiled in the listening flavor, this includes one 
+      fixed-size error-object slot sized for the maximum error object the function can produce
+    - honors user register-pin annotations within the per-function budget
+    - emits a diagnostic for pins that exceed it
+    - scans for Unresolved-typed symbols and Error-tainted nodes
+    - sets up the Coder to emit runtime no-ops for them per XMC §27d. 
+
+See §6.1 for the full stage-division discussion.
+
+1f. Coder
+---------
+
+Per-xmo parallel. Walks the parse tree and populates each node's codeBlocks vector — a vector<uint16_t> of indices into the
+unified CodeBlocks table (§3 below). The skeleton-and-overrides algorithm is the subject of §4. The Coder does not write
+bytes; it selects them. Inlining of fully-resolved functions has already happened upstream in the Morpher (§2e); by the time
+the Coder runs, every reachable call site is either a non-generic call referencing a concrete function tree or a fully-
+specialized call with its specialization tree attached, and there is no template-style "instantiate at codegen time" case
+left for the Coder to handle. When the project file requests a CoderLog, the Coder records its alternate-chain choices and
+the realized vs. optimal cost difference for each operation, so suite testing can drive tuning at the cases with the largest
+gap.
+
+1g. Emitter
+-----------
+
+Two-phase. Phase one populates each Xmo's codeBuffer in parallel: one threadpool task per xmo walks that xmo's parse tree in
+tree order, and at every node with a non-empty codeBlocks vector copies the bytes (per §5) into Xmo::codeBuffer, applying
+relocation patches and accumulating Xmo::relocs entries. These tasks cannot start until the Coder has finished — they consume
+the codeBlocks vectors the Coder produces — and phase two cannot start until they finish.
+
+Phase two is single-threaded across the project. It serializes each Xmo (XmoHeader + string pool + exports + scopes +
+observer/import edges + codeBuffer + relocations + optional parse tree) to its .xmo file, then assembles the project's .obj
+via the existing Coff class. The Coff class holds mutable section state that doesn't naturally parallelize, and serializing
+the per-xmo .xmo files is fast enough that single-threaded fine. The version of phase one currently in Emitter.cpp is a
+working initial implementation that needs to be refactored into a class as the surrounding shapes settle.
+
+1h. Linker
+----------
+
+External. The Linker class (Linker.h) locates link.exe via vswhere, builds an MSVC argument string from CompileJob and the
+ProjectFileReader's library/subsystem/CRT settings, and launches link.exe as a child process. It is not a code-producing
+stage — only the orchestrator for the platform tool that turns the per-project .obj plus its imported libraries into the
+final executable.
+
+
+2. PARSE NODES AS THE SPINE
+===========================
+
+Every stage from Parser onward operates on the parse tree. The tree is not just a representation of source — it is the
+resolution graph, the codegen plan, and the relocation index, with each stage adding fields and never removing any.
+
+2a. Parse-tree spine
+--------------------
+
+ParseTreeNode (allocated from the per-file Xmo::arena, never freed individually) carries:
+
+    kind             — enum tag identifying the construct
+    parent           — back-pointer up the tree
+    children         — pointers to child nodes (also in arena)
+    baseType         — u32; one of BaseTypeIds
+    minrmask         — u8; refinement bits known to apply
+    maxrmask         — u8; refinement bits still permitted
+    declaredSymbol   — for declaration nodes, the Symbol declared
+    payload          — kind-specific union (literal value, call args, function metadata, etc.)
+    codeBlocks       — vector<uint16_t>; populated by the Coder, empty pre-Coder, consumed by the Emitter
+
+The fields are plain (non-atomic) because per-file morphing is single-threaded — see §2b. Locality matters during the
+morph walks (the tree is touched in roughly tree order through the entire pipeline), which is why ParseTreeNode lives in
+the per-file Arena and not in some side table.
+
+2b. Threading and synchronization
+---------------------------------
+
+The Morpher uses one thread per source file, with synchronization at file boundaries rather than at every parse node.
+Within a file, propagation is single-threaded over that file's parse tree, so baseType, minrmask, and maxrmask need no
+atomic protection. The synchronization that does exist lives at the symbol/subscriber index — the meeting point where one
+file's morpher communicates a resolution to another file's morpher — and on the per-file morpher work queues, which are
+written by foreign threads (when a remote symbol resolves and propagation reaches a local subscriber) and read by the
+file's own morpher thread. Each work queue is a lock-free MPSC structure paired with a condition variable; foreign writers
+push and signal, the local morpher pops and processes, sleeping on the condvar when the queue is empty.
+
+A more parallel design — atomics on every parse-node field, one threadpool task per work-queue entry — was considered and
+deferred. It has theoretical appeal (every node can be touched by any thread, with the Morpher's work decomposed into
+fine-grained tasks), but the per-task scheduling overhead probably overwhelms the per-task work for the kind of short
+propagations the Morpher does, and per-node atomics cost on every load and store regardless of contention. The simpler
+per-file-thread design is the current commitment; the more parallel variant would only become attractive on hardware where
+intra-file propagation is wide and concurrent enough to amortize task dispatch.
+
+2c. Resolution flow and the subscriber index
+--------------------------------------------
+
+Within a file, resolution flows along parent pointers. When the Morpher resolves a node, it walks up to check whether each
+ancestor can now resolve given its newly-determined child. There is no separate dependency-graph data structure for parent/
+child resolution flow; the tree edges suffice.
+
+For cross-file propagation — a symbol declared in one xmo and used in many — a per-CompileJob subscriber index handles
+notifications. References to a Symbol may live in many parse trees, so the subscriber list cannot be carried on the
+declaring node alone. The index is a sharded phmap::flat_hash_map keyed by SymbolKey, with each entry pointing to a
+lock-free Treiber-stack SubscriberList of (file, ParseTreeNode*) pairs. Append (Parser, on first reference) takes a shared
+lock for the map lookup and CAS-pushes onto the list. Iterate (Morpher, on a Symbol's morph) takes a shared lock,
+snapshots the head, releases the lock, and walks the captured chain — and for each subscriber, the iterating thread
+enqueues a work-queue entry on the *subscriber's* file's morpher queue rather than touching the subscriber node directly.
+Subscribers are never removed; stale notifications, when re-fired into a queue whose target node is already resolved, are
+processed and discarded by the receiving morpher as no-ops thanks to monotonicity.
+
+This is the file-boundary mechanism the §2b threading model rests on: one morpher thread never reaches into another
+file's parse tree. The boundary objects — the symbol, the subscriber index, the per-file work queues — are the only places
+that need synchronization, and the parse trees themselves can be plain.
+
+2d. Stub nodes and forward references
+-------------------------------------
+
+Forward references — calling a function whose definition appears later, or referring to a type defined elsewhere — are
+handled by mutation rather than fixup. When the Parser hits an undeclared name, it interns a placeholder Symbol with
+baseType == Unresolved and creates a ParseTreeNode of kind Stub registered as that Symbol's declaration. Subsequent
+references subscribe to the Stub through the ordinary subscriber mechanism. When the real declaration parses, the Parser
+overwrites the Stub's kind and payload in place; the Stub's address does not change, so all the subscriber pointers and the
+declaredSymbol back-reference on the Symbol stay valid. Stub mutation happens on the file's own parse tree, on the file's
+own thread, and so needs no synchronization.
+
+2e. Generic instantiation
+-------------------------
+
+Inlining and generic instantiation are the same mechanism. A call site begins life as a Stub node subscribed to its callee's
+Symbol. The callee Symbol may be a regular function, a generic function, an expression closure, an anonymous function, or
+the body of an unlabeled nested scope — anywhere the language has an entity whose definition becomes known at some point
+during the pipeline.
+
+When the callee Symbol closes out as fully defined, the Morpher visits its subscribers. There are two cases:
+
+For a non-generic callee, the Morpher mutates the call-site Stub in place into a regular call node that references the
+callee's parse tree, and finalizes the call node's type and refinement immediately from the now-known signature. This is
+inlining proper for small fully-resolved functions, and ordinary call setup for everything else; the difference is just
+how much of the callee's tree the Coder ends up using when it walks the call node, not a different mechanism.
+
+For a generic callee, the Morpher mutates the Stub into a generic call node, deep-copies the callee's parse tree under it
+into the call site's arena, and adds references to the leaves of the copied subtree onto the morpher work queue. From
+that point the copied tree morphs in the call site's file like any other parse tree — leaves up, propagation through
+parents, eventual resolution to a concrete signature. Per-call-site copies are independent: each gets its own type and
+refinement state, its own codegen, and its own emitted code, exactly as needed for instantiations whose callers narrow the
+generic differently.
+
+The leaf-driven work-queue design means morpher work-queue entries are small — process this leaf, propagate up — which
+keeps each unit of morpher work uniform and bounded.
+
+A signature-keyed cache deduplicates specializations: when a call site's specialization narrows to a concrete signature
+that some prior call site has already produced, the second instantiation can share the first's specialized tree rather
+than morphing a fresh copy. The cache lives on the callee Symbol, keyed by the tuple of (baseType, minrmask) for each
+parameter and the return type. The first morpher to produce a given specialization wins; subsequent callers reach the
+cache, find the entry, and bind their call site to it. This saves cost in code bases that use the same generic functions
+heavily across many call sites with similar signatures.
+
+2f. The Coder's contribution: codeBlocks
+----------------------------------------
+
+The Coder's contribution to ParseTreeNode is the codeBlocks vector. For an unresolved or Error-tainted node it stays empty,
+and the Emitter skips it (its operations are runtime no-ops). For every other node it holds the sequence of indices into
+the unified CodeBlocks table that, in order, realize the node's behavior. The vector can also be empty for nodes whose
+codegen is rolled into their parent's blocks (operands that are immediates the parent encodes inline, scope-only nodes,
+etc.). The Emitter iterates each non-empty vector in tree order; semantically the order in which a node's blocks appear in
+the final code buffer is exactly the order in which the Emitter visits the parse tree.
+
+
+3. THE UNIFIED CODE-BLOCK TABLE
+================================
+
+The Coder picks code blocks; the Emitter copies their bytes. Both operations index into a single global CodeBlocks table.
+Earlier versions of the source split this into two — PrimaryCodeBlocks (numbered by id, the natural code) and AltCodeBlocks
+(alternate encodings for register pressure). They are merged into one CodeBlocks vector indexed by uint16_t, and each entry
+carries a nextAlternativeIndex pointer that chains it to the next alternate for the same operation. Walking the chain from
+any block reaches the rest of its alternates, and 0xFFFF terminates the chain.
+
+CodeBlock is 32 bytes (CodeBlock.h):
+
+    uint32_t reserveMask          — registers this block reserves while it executes; checked against the live mask
+                                    to decide whether the block fits
+    int32_t  nextAlternativeIndex — index of the next entry in this block's alternate chain, or 0xFFFF if this is the
+                                    chain terminator (see below)
+    uint8_t  cost                 — relative cost; the Coder picks the cheapest fitting alternate
+    uint16_t codeSize             — bytes of this block's machine code
+    uint8_t  patchOffset          — byte index within code[] of the relocation immediate, or 0xFF if the block needs
+                                    no relocation
+    uint8_t  code[19]             — the machine code itself; 32-byte struct minus the metadata leaves 19 bytes,
+                                    sufficient for every instruction in the x64 ISA we actually generate
+
+The field is currently named altTableIndex in CodeBlock.h; rename to nextAlternativeIndex is part of the merge, since "alt
+table" no longer refers to a separate table.
+
+Chain semantics. From any starting block, the Coder walks nextAlternativeIndex, examining each candidate's reserveMask
+against the currently-live registers. The first block whose reserveMask does not conflict with the live mask is a candidate;
+the cheapest such candidate (lowest cost) is the chosen block. When the walk hits 0xFFFF, the last block walked is the spill
+block — the last-resort encoding that always works because it spills through stack rather than relying on registers, at
+extra cost. The spill block is always the chain terminator, so the chain walk has a guaranteed finish: even under maximum
+register pressure, the spill block fits.
+
+Cost is the Coder's only optimization metric for block selection. It is a coarse uint8_t — no attempt to weight pipeline
+width, microarchitectural quirks, or instruction fusion. Cost values come from a hand-tuned table reflecting Skylake-era
+latency averages; the Coder sums per-block costs to score whole-node candidates when multiple blocks combine to encode one
+operation. Refinement of the cost model is a profiling-driven future task; it does not affect correctness.
+
+PrimaryCodeBlocks.h currently contains five entries that exercise the format end to end and serve as illustrations for the
+per-built-in chapters: prologue (sub rsp, imm8 with patchable immediate at byte 3), epilogue (add rsp, imm8 + ret),
+lea_rcx_rel (rip-relative load of a 32-bit displacement into rcx, used for global string loads and similar), call_rel32
+(E8 + 4-byte displacement for direct calls), and xor_eax_eax (the canonical zero-rax with cost 0 since modern x64
+implementations eliminate it). These will move into the unified CodeBlocks table with nextAlternativeIndex chains as the
+remaining blocks are added.
+
+
+4. THE CODER'S ALGORITHM
+=========================
+
+When the Coder receives a parse node, the codeBlocks vector is empty. The node carries its baseType and minrmask (settled
+by the Morpher), its kind (which encodes the operation: assign, add, load, call, etc.), and pointers to its operand
+children. The Coder must produce the codeBlocks vector that, when the Emitter walks it, encodes that operation correctly
+for that type with that refinement profile.
+
+The naive approach — one giant decision tree keyed on the cross product of baseType, operation, and every refinement bit
+combination — is unmaintainable. Even for the dozen or so built-in baseTypes, with eight refinement bits and a half-dozen
+operations per type, the cross product is in the thousands and most cells differ from their neighbors only in one or two
+blocks. We factor this with a four-table model.
+
+Table A — skeletons. Indexed by (baseType, operation). Each entry holds a vector<uint16_t> of code-block indices — the
+natural-default implementation of that operation on that type, with placeholder slots at positions whose contents depend
+on refinement — together with an index into Table B for that (baseType, operation) pair. The skeleton describes the type's
+natural-default profile, not literal rmask 0. For i32 the skeleton encodes a singular, materialized, fixed, homogenous,
+serial, mutable i32 — the profile a programmer gets when they declare i32 with no further qualifications and the Morpher's
+narrowing converges on the cheapest valid bits. The overrides described next apply only to refinement bits that depart
+from this baseline.
+
+Table B — refinement coverage. One entry per (baseType, operation), addressed by the index in the corresponding Table A
+entry. Each Table B entry is a vector of {coverageRmask, tableCIndex} pairs, sorted ascending by cost. The Coder picks the
+first entry whose coverageRmask is a superset of the node's minrmask — that is, the cheapest refinement profile that still
+covers every bit the Morpher decided was required. This is how the Coder composes refinements: the entries with single-bit
+coverageRmasks handle the simple cases, and entries with multi-bit coverageRmasks handle combinations whose joint encoding
+differs from the bit-by-bit overlay (a list with concurrent + resizable, where the concurrent grow path is qualitatively
+different from the serial grow path; this entry has higher cost than the simpler ones but is the only one whose coverage
+includes both bits). The cost-sorted first-superset rule subsumes any need for explicit "compound key beats single-key"
+arbitration.
+
+Table C — placeholder application. Indexed by tableCIndex from Table B. Each Table C entry is a vector of
+{positionInSkeleton, tableDIndex} pairs — one per placeholder slot in the skeleton, telling the Coder which Table D vector
+to splice into which position.
+
+Table D — refinement block vectors. Indexed by tableDIndex from Table C. Each Table D entry is a vector<uint16_t> of
+code-block indices: the actual sequence of blocks that goes into one placeholder slot.
+
+Coder algorithm:
+
+    1. Look up Table A using (node.baseType, node.kind). Read the skeleton vector, the placeholder positions, and the
+       Table B index.
+
+    2. In Table B, walk the cost-sorted entries. The first one whose coverageRmask is a superset of node.minrmask is the
+       chosen refinement profile; read its Table C index.
+
+    3. From the Table C entry, read the {positionInSkeleton, tableDIndex} pairs. Build the working vector by memcpy'ing
+       the skeleton up to the first placeholder position, memcpy'ing the corresponding Table D vector, memcpy'ing the
+       skeleton from there up to the second placeholder, memcpy'ing the second Table D vector, and so on, ending with
+       the skeleton tail after the last placeholder.
+
+    4. For each block in the resulting vector, walk its nextAlternativeIndex chain against the current live-register mask,
+       picking the cheapest fitting alternate. If the walk reaches 0xFFFF, the spill block is used; the Coder writes a
+       diagnostic to osdebug noting the spill, when osdebug is enabled.
+
+    5. Sum costs across the chosen blocks and store the resulting indices in node.codeBlocks. When CoderLog is enabled,
+       record the chain-walk choices and the realized vs. optimal cost difference for this node.
+
+Four tables is more indirection than strictly necessary for correctness — Table D could be folded into Table C with each
+entry holding length and inline bytes, for example — but the Coder is unlikely to be the slow part of the pipeline, and
+the four-table layout keeps each table's responsibility narrow: Table A is skeleton-shape, Table B is cost-ordered
+refinement selection, Table C is placeholder-to-data mapping, Table D is the data itself. The flatter alternatives are
+straightforward to apply once profiling justifies them.
+
+Skeleton baseline as natural default, not rmask 0. Some refinement bits make a type cheaper, not more expensive — pinning
+a list as fixed eliminates the resize machinery, marking it homogenous removes the per-element type tag. The skeleton is
+calibrated to the natural-default refinement profile (the bits the Morpher converges on for an unannotated declaration),
+which for i32 includes fixed and homogenous, so an explicit i32 fixed = 7 needs no override; the skeleton already encodes
+the cheap path. Conversely, a bit that adds work (concurrent, resizable, variant) appears in the override tables because
+it represents a departure from the baseline.
+
+Function calls, member access, subscript, and the operators slot into the (baseType, operation) lookup naturally — they are 
+function calls on a type, and each type's chapter in §7 describes how these operations are implemented.
+
+Section 6 covers what doesn't fit the (baseType, operation) lookup: the flow-structuring conjunctions (if, while, for, 
+switch, return, the pipe operator, the error-block construct), is-checks (whose skeleton family is selected by operand-baseType 
+kind rather than identity), and the cross-cutting machinery — literal-value patching, jump-label resolution, parameter-fill 
+via Tables E and F, the Reviewer's register discipline, function-call ABI plumbing, and control-flow-variant routing at
+handler sites — that both §6 and §7 rely on.
+
+
+5. THE EMITTER, THE XMO FILE, AND COFF ASSEMBLY
+================================================
+
+The Emitter has two phases. Phase one is per-xmo parallel: one threadpool task per xmo walks that xmo's parse tree in tree
+order, copying CodeBlock bytes into Xmo::codeBuffer and accumulating XmoRelocation entries. Phase two is single-threaded
+across the project: it serializes each .xmo file from its now-populated state and assembles the project .obj via the Coff
+class.
+
+Phase one. For each Xmo, the assigned task walks the parse tree in tree order. At every node with a non-empty codeBlocks
+vector, it copies each CodeBlock's code[codeSize] bytes onto the end of Xmo::codeBuffer. Where the block has patchOffset !=
+0xFF, the task records an XmoRelocation (offset = current codeBuffer size + patchOffset, targetNameOffset/targetNameLen
+pointing into the eventual string pool, kind selected by the patch context — typically IMAGE_REL_AMD64_REL32 for direct
+calls and rip-relative loads). Function entry and exit are special: an outer wrapper around the function-body walk emits
+the prologue block (recording prologueImmediatePos so the final stack size can be back-patched), then walks children, then
+back-patches the prologue and emits the epilogue.
+
+Per-function state during this walk lives in EmitterFuncContext (EmitterData.h): prologueImmediatePos, currentSpills,
+peakSpills, localVars, finalStackSize. Functions nest via a vector<EmitterFuncContext> stack the task pushes on function
+entry and pops on function exit, so nested function definitions (closures, generator bodies, lambdas) account correctly for
+their own stack frames. Phase one's per-xmo tasks are independent — each touches only its own Xmo's codeBuffer and relocs —
+so no cross-xmo synchronization is needed within phase one. The tasks cannot start until the Coder has finished, and phase
+two cannot start until they finish.
+
+Phase two. Once all phase-one tasks complete, the Emitter serializes each .xmo file:
+
+    XmoHeader            — magic, version, table counts, code-buffer offset/size, parse-tree offset/size (the latter
+                           zero if parse tree not persisted)
+    string pool          — interned name bytes referenced below
+    XmoExport[]          — per-symbol baseType, refinement, scope path, code-buffer offset of the symbol (where the
+                           function body or static data starts, set during the parse-tree walk)
+    XmoScope[]           — scope-tree records (parent scope id, block type)
+    observer edges       — (symbol_key, observer_xmo_name) pairs from Xmo::observedBy
+    import edges         — (origin_xmo_name, symbol_key) pairs from Xmo::importsOf
+    code buffer          — the bytes accumulated in phase one
+    XmoRelocation[]      — collected during phase one
+    parse tree           — only on Full-state saves; serialized via Arena copy for fast deserialization. HeadersOnly
+                           saves omit it.
+
+Names serialize as offsets into the string pool and are re-interned into the new job's SymbolTable on load. xmoIdx is never
+persisted; it is reassigned at load time per the new run's Compiler::xmos ordering. The on-disk format is mirrored by the
+wire structs in Xmo.h (XmoHeader, XmoExport, XmoRelocation, XmoScope) — the serialization code has one place to look for
+the binary contract, and field widths are fixed.
+
+After all .xmo files are written, the Emitter assembles the project's .obj via the Coff class. The flow is:
+
+    1. Create the .text section via Coff::CreateSection.
+
+    2. For each Xmo in turn, AppendPadding to 16-byte alignment, record the Xmo's tempGlobalOffset (the start of its
+       bytes within the project .text), and AddRawBytes(codeBuffer). Then for each XmoExport, DefineSymbol with absolute
+       offset = tempGlobalOffset + export.offset, retaining the returned COFF symbol index in a project-wide name ->
+       symIdx map.
+
+    3. For each Xmo's XmoRelocation entries, look up the target name in that map. If found, AddRelocation with the
+       existing symbol index; otherwise AddExternalSymbol to register an extern, store its index in the map, and use it.
+       This handles both intra-project relocations (most common) and references to imported library functions (resolved
+       by the linker).
+
+    4. Coff::WriteTo emits the final IMAGE_FILE_HEADER, section headers, raw section bytes, relocations, the symbol table,
+       and the string table to disk.
+
+The current Emitter.cpp is a working initial implementation of phase one's central loop and the Coff handoff. It needs to
+be refactored into a class shaped around the two-phase split, and small updates to the codeBuffer mechanics and the .xmo
+format will follow as we stabilize the surrounding designs.
+
+Linker. The Emitter's job ends with the .obj. Linker::Link picks up from there. FindLinkerPath runs vswhere to locate the
+latest installed Visual Studio with C++ build tools and resolves link.exe under VC\Tools\MSVC\<version>\bin\Hostx64\x64\.
+BuildArgs assembles the MSVC argument string from CompileJob (input .obj path, output .exe path) and ProjectFileReader
+(subsystem, CRT selection, library search paths, static and dynamic library lists, optional entry-point override).
+RunProcess launches link.exe with combined stdout/stderr captured back into a string, which is written to the debug log
+stream; the linker's exit code determines whether the job ends with ErrorOccurred set.
+
+The xmc compiler does not produce the executable directly. It produces a single .obj per project, and link.exe takes that
+.obj plus its imported libraries to produce the final image. This is a deliberate boundary: the linker is a well-understood
+platform tool with its own settings surface (CRT, subsystem, manifests, debug-info merging), and reimplementing it would
+buy nothing the compiler proper needs. The compiler ends at the .obj and hands off.
+
+
+6. CODEGEN FOR FLOW-STRUCTURING KINDS AND CROSS-CUTTING MACHINERY
+=================================================================
+
+§4 covers per-baseType operations: every operator on every type — arithmetic, comparison, subscript, member access, method 
+call, and the type's built-in vocabulary — is keyed by (baseType, operation) and described in that type's chapter of §7. 
+Operators are function calls on a type; an i32's + has its own skeleton in i32's Table A entry just as a list's add has 
+its own skeleton in list's Table A entry. There is no separate operator-codegen story.
+
+This section covers what's left:
+
+  - Kinds that don't operate on a value of any particular type, and so have no (baseType, operation) key:
+    the conjunctions — if, else, while, do-while, for, for-in, switch, case, return, yield, break,
+    continue, spawn, the pipe operator |, and the error-block construct {? ?}. Their codegen is jump-
+    and-label scaffolding plus recursion into their children.
+
+  - is-checks (XMC §12g), whose skeleton family (variant-tag check vs. class-hierarchy check) is selected
+    by the operand baseType's *kind* rather than its specific identity. Two skeletons, one per family.
+
+  - Cross-cutting machinery that every kind in §6 and §7 relies on: literal-value patching, jump-label
+    resolution, parameter-fill via Tables E and F, the Reviewer's register-assignment discipline, the
+    function-call ABI, and control-flow-variant routing at handler sites.
+
+The cross-cutting machinery is the subject of 6.1. The remainder of the section walks each conjunction in turn.
+
+
+6.1 FRAMEWORK
+-------------
+
+Parse tree vocabulary. Three node shapes appear in this section:
+
+    Nouns hold values. Identifiers, literals, parameters, locals — anything that names or materializes a
+    value. Nouns have no children of their own; they are leaves in the expression tree.
+
+    Verbs produce values. Binary operators, unary operators, member access, subscript, function calls,
+    generator .next() handles. Verbs take their operands as children — even binary operators, where what
+    the source reads as "a + b" parses to a + node with a and b as children. The verb's parent is whatever
+    embeds the expression: an assignment, a return, a call argument, a condition slot, an expression
+    statement.
+
+    Conjunctions structure flow. if, else, while, do-while, for, for-in, switch, case, return, yield,
+    break, continue, spawn, the pipe operator |, and the error-block construct {? ?}. Conjunctions don't
+    produce values; they organize where execution goes. Each conjunction's children are named by position
+    (an if has [cond, then-body, optional else], a switch has [key, case+, optional default]).
+
+This taxonomy was implicit in §4's "verb is a function call on its baseType" framing. 6.1 makes it explicit
+because the per-kind walkthroughs in 6.3 onward speak in terms of it.
+
+Parameter-id namespaces. The Reviewer's job is to assign a parameter id to every value-producing position
+in the tree — every noun, and every verb whose result will be consumed. Six namespaces:
+
+    register id     — one of RAX, RCX, RDX, R8, R9 (the strict five; see "Register budget" below).
+    stack-slot id   — synthetic slot index; resolved to [rbp - N] at codegen time. The Reviewer also
+                      computes per-function totalStackSize from the count of slots assigned, which the
+                      Emitter back-patches into the prologue.
+    immediate id    — value patched directly into the instruction byte stream. Used for small integer
+                      literals and constant offsets.
+    RIP-relative
+      literal id    — a per-function literal-pool entry. Used for full-width pointers, doubles, large
+                      struct constants — anything that doesn't fit as an immediate.
+    SymbolKey       — interned symbol; resolved by the Emitter into a relocation that the linker fills
+                      in at link time.
+    jump-label id   — synthetic intra-function label. The Coder records each label's emit-time byte
+                      offset and patches forward references to it. Only used by conjunctions.
+
+A verb-node payload from the Reviewer carries the operation's type-context — for nodes that resolve
+to a (baseType, operation) skeleton, the baseType identifying which Table-A entry to start from; for
+conjunctions, the conjunction kind itself, with no Table-A lookup — plus a parameter list of parameter
+ids identifying where each operand's value lives and where the result, if any, should land.and.
+
+Stage division. Section 6 reorganizes the pipeline's per-stage responsibilities slightly from §1's framing.
+The reorganization is documented here; §1 will be updated to match.
+
+    Morpher remains pure analysis: sets baseType, narrows minrmask and maxrmask, emits diagnostics,
+    propagates type information through the parse tree and the subscriber index. The Morpher does not
+    mutate the tree or write codegen-prep information into payloads. Its outputs to the Reviewer are the
+    final baseType and rmask fields on every node, stable for the Xmo by the time the Reviewer runs.
+
+    Reviewer runs as a per-Xmo task once the Morpher has converged for that Xmo. It does the codegen-prep
+    work that needs converged types but precedes block selection. Specifically:
+
+        - inserts conversion nodes where operand types don't match operation expectations, choosing the
+          conversion based on now-final source and target baseTypes (§4-style table lookup keyed by
+          (sourceBaseType, targetBaseType, "convert"));
+        - inserts null verb nodes where no conversion is available, and removes the right-hand subtree
+          under each null verb (null verbs need no operands);
+        - assigns parameter ids to every noun and every value-producing verb in each function, using
+          the strict register budget below;
+        - writes each verb-node's parameter list into its payload;
+        - computes and stores per-function totalStackSize on the function-declaration payload, ready
+          for the Emitter's prologue back-patch; for fallible functions compiled in the listening
+          flavor, this includes one error-object slot sized for the maximum error object the
+          function can produce;
+        - honors user register-pin annotations where the per-function budget allows, and emits a
+          diagnostic for pins that exceed it.
+
+    The Reviewer is per-Xmo because all of its work is local — it operates on one parse tree against the
+    converged type information left by the Morpher, with no cross-file dependencies. Its tree mutations
+    are unsynchronized: the Morpher has finished, the Coder has not yet started, no other stage is
+    reading the same tree.
+
+    Coder still does block selection (§4's algorithm, extended below by Tables E and F). For each verb
+    node, the Coder reads the Reviewer's parameter list, splices the appropriate parameter blocks into
+    the skeleton's parameter slots, and walks each block's nextAlternativeIndex chain against the
+    currently-live register mask.
+
+    Emitter is unchanged from §5: walks the tree, copies CodeBlock bytes, records relocations, back-
+    patches stack frame sizes from the per-function totalStackSize the Reviewer wrote.
+
+Register budget. The Reviewer uses exactly five general-purpose registers: RAX, RCX, RDX, R8, R9. These
+are the Microsoft x64 ABI's first four argument registers (RCX, RDX, R8, R9) plus the return register
+(RAX), so call sites need no shuffling — the registers the Reviewer assigned for a call's arguments are
+already where the called function expects them.
+
+The remaining ten GPRs (RBX, RSI, RDI, RBP, R10, R11, R12, R13, R14, R15) are reserved for the Coder's
+chain-walk to use as scratch — intermediate values within a node's block sequence, register-pressure
+spill targets, alternate encodings.
+
+A user register-pin annotation is honored if doing so does not push the Reviewer's per-function register
+count above six. The sixth register comes from the Coder's reserved pool. Pin annotations beyond that
+budget are ignored; the Reviewer emits a diagnostic but proceeds without the pin.
+
+A consequence of choosing the ABI's caller-saved registers as the Reviewer's working set: any value live
+across a function call must occupy a stack slot, because all five Reviewer registers are clobbered by
+the call. This is the Reviewer's responsibility to plan for during assignment — values whose lifetimes
+cross a call site land in stack slots, not registers. If profiling later shows this is a meaningful cost
+in call-heavy code, the Reviewer can be extended to use one or two callee-saved registers for cross-call
+lifetimes, with corresponding prologue/epilogue save and restore. Deferred.
+
+Tables E and F. Where §4 splices refinement overrides into skeleton placeholders, 6.1 extends the same
+model to splice parameter blocks into refinement-vector parameter slots. Two more tables in the same
+family as A through D.
+
+    Table E — refinement-vector parameter slots. Indexed by (baseType, operation, tableDIndex). Each
+    entry is a vector of records (position, parameterBlockIdx) identifying each parameter slot's
+    position within the refinement vector and the Table-F entry that supplies its parameter blocks.
+
+    Table F — parameter blocks. Indexed by (parameterBlockIdx, parameterKey). Each entry is a vector
+    of records (rmask, parameterBlockIdVector) — the same cost-ordered, rmask-keyed shape Table B uses.
+    A 0xFF rmask matches everything, used for parameter blocks that don't depend on refinement.
+
+Coder algorithm, extending §4 step 3. For each refinement vector the Coder pulls from Table D, it
+first consults Table E to fill the vector's parameter slots: for each (position, parameterBlockIdx)
+entry in Table E, the Reviewer-supplied parameter list provides a parameterKey; the Coder looks it
+up in Table F, picks the cheapest parameterBlockIdVector whose rmask covers the node's minrmask,
+and splices it into the parameter slot. With the refinement vector's parameters now filled in, the
+Coder splices the completed refinement vector into the skeleton's placeholder slot. Then it walks
+the alternate chains for the surrounding non-parameter blocks against the live mask.
+
+6.1.1 MORPHER WORK FOR §6 KINDS
+-------------------------------
+
+Conjunctions and is-checks have no codegen-specific work for the Morpher — its job for them is the
+same type-propagation it does everywhere else. This subsection summarizes that work at the level of
+conjunctions, both as a reading aid for 6.2 onward and as the place to address the one question that
+might otherwise look like it needs special handling: refinement narrowing across control-flow joins.
+
+Type propagation through children. Each conjunction's children are independent type-propagation
+contexts. The Morpher recurses into cond, body, label-expr, and the rest, propagating types and
+narrowings as normal. There is nothing conjunction-specific about how propagation flows within a
+child subtree.
+
+Type-checking constraints specific to each conjunction:
+
+    if, while, do-while, for      cond's resolved baseType must be convertible to b (boolean) under
+                                  xmc's truthiness rules. The Morpher emits a diagnostic if not.
+
+    for-in                        source's resolved baseType must be iterable — a Generator<T>, a
+                                  container with a generator-producing iterator method, or a user
+                                  type that supplies for-in support. The Morpher emits a diagnostic
+                                  if not. The var-decl child's type is inferred from the source's
+                                  yielded element type.
+
+    switch                        Each case label-expr's baseType must unify with key's baseType,
+                                  directly or via an available conversion. The Morpher emits a
+                                  diagnostic for any case that doesn't.
+
+    return                        The expression's type must unify with the enclosing function's
+                                  declared return type. Type inference flows in both directions
+                                  when the return type is unspecified.
+
+    yield                         The expression's type contributes to the enclosing generator's
+                                  yielded element type.
+
+    break, continue               Carry an optional label that must name an enclosing loop. The
+                                  Morpher checks the label exists in the loop-label scope at the
+                                  break/continue site.
+
+    spawn                         The body's type-propagation runs as an independent context whose
+                                  resolved type becomes T in the spawn-node's resulting Promise<T>.
+
+Refinement narrowing across joins. When a symbol is narrowed (a bit added to its minrmask) by an
+operation in one branch of an if or one case of a switch, that narrowing propagates through the
+subscriber index to every reference to the symbol — including references in the other branch and
+in the code after the join. By the time the Morpher has converged for the Xmo, every reference to
+the symbol has the union of all observed narrowings, regardless of which branch made the
+observation.
+
+This is the right answer because xmc's rmask bits describe the value's representation, not its
+state at a program point. A list whose minrmask has concurrent must be concurrent at every site
+it is touched, because there is one physical list and one physical representation; if any branch
+observes it as concurrent, the representation is concurrent throughout the symbol's lifetime. The
+same holds for arc, resizable, fluid, variant, and the rest. The if cannot be hit multiple times
+producing a sometimes-concurrent, sometimes-not value — there is no morphing at runtime; the
+type's representation is fixed by what the Morpher converges on.
+
+The implication for control-flow joins is therefore that no merge logic is needed. The narrowings
+flow through the existing per-symbol propagation machinery from §2, and post-join code sees the
+union of all branch narrowings as a natural consequence.
+
+Type widening — for example, assigning different types in different branches when the receiving
+symbol's declared
+
+6.2 CONDITIONALS
+----------------
+
+if. Tree shape:
+
+    if [cond, then-body, optional else]
+
+cond is an expression subtree (verb at root, or a bare noun in the trivial case if (x) { ... }).
+then-body is a statement sequence — a block node whose children are the statements forming the body.
+else, if present, is an else-node child whose own child is either a body block or another if-node.
+The chain else if (a) { ... } else if (b) { ... } else { ... } parses to nested else-if-else-if-else
+structure, with each inner if sitting under its containing else.
+
+Reviewer prep. Assigns jump-label ids for the if's branch targets: label_endif always, label_else
+when an else child is present. These land in the if-node's codegen-prep payload alongside the cond's
+result-register parameter id. Recurses into cond, then-body, and else to assign their parameter ids.
+
+Coder codegen. The Coder emits, in order: the cond's block sequence (recursive), a test instruction
+on the cond's result register, a conditional jump (forward, target patched against label_else or
+label_endif), the then-body's block sequence (recursive), and — when an else is present — an
+unconditional jump (forward, target patched against label_endif), then the else-body's block sequence
+(recursive). The Coder records label_else's emit-offset before the else-body and label_endif's
+emit-offset after everything, and patches forward references to those labels.
+
+Conditional-jump and unconditional-jump code blocks are not §4 Table-A entries. Their behavior is
+parameterized only by a register (for conditional jumps) and a jump-label id, both supplied in the
+if-node's parameter list. They live as fixed entries in the unified CodeBlocks table, indexed by
+symbolic constant from CoderConstants.h. Both have alternate chains: the short-form 8-bit-
+displacement jumps when the target is provably within range, and the long-form 32-bit-displacement
+jumps otherwise.
+
+Jump-label patching. When the Coder emits a jump block whose target is forward, it cannot fill in
+the displacement immediate yet — the target's emit-offset is unknown. The displacement bytes are
+left as a patch site recorded in a per-function jumpPatches list: (emit-offset of patch byte,
+jump-label id, displacement size). When the Coder later records a label's own emit-offset, it scans
+jumpPatches for entries naming that label, computes each patch's displacement, and writes it back
+into the codeBuffer. Backward jumps fill their displacements immediately at emit time, since the
+label is already recorded.
+
+This patch mechanism is intra-function only. Inter-function references — calls, indirect jumps to
+addresses in other compilation units — go through SymbolKey relocations, which the Emitter records
+in Xmo::relocs and the linker resolves. Jump-label ids never escape the function in which they were
+assigned.
+
+else. Tree shape:
+
+    else [body-or-if]
+
+A single child: a body block (terminal else) or another if-node (else-if). The Reviewer assigns no
+labels to the else-node itself; the parent if-node owns them. The Coder, on reaching the else during
+the if-node's codegen, records label_else's offset and recurses into the else's child.
+
+switch. Tree shape:
+
+    switch [key, case+, optional default]
+
+key is an expression subtree. Each case is a case-node with two children: [label-expr, body]. default,
+if present, is a default-node with one child: body. xmc switches do not fall through; each case body
+is followed by an unconditional jump to the end of the switch.
+
+Reviewer prep. Assigns one jump-label id per case body, one for the default body if present, and one
+for label_endswitch. Recurses into key, each case label-expr, each case body, and the default body
+to assign their parameter ids. The dispatch lowering (compare-chain, jump-table, binary-search) is a
+Reviewer choice; the initial implementation uses compare-chain for every switch. Future heuristics
+can pick alternative lowerings based on case count and label-value density without changing the
+codegen-prep payload's shape — the case body labels and label_endswitch are needed by every lowering,
+and only the dispatch sequence itself differs.
+
+Coder codegen, compare-chain lowering. The Coder emits the key's block sequence (recursive), then
+for each case in source order: the case label expression's block sequence (recursive), a compare
+instruction against the key's result register, a conditional-jump-equal whose target is patched
+against the case body's label. After the dispatch chain: an unconditional jump to default_body_label
+if a default exists, otherwise to label_endswitch. Then for each case body in source order: record
+the case body label's offset, emit the body's block sequence (recursive), emit an unconditional jump
+to label_endswitch. If default is present: record default_body_label's offset, emit the default
+body's block sequence. Record label_endswitch's offset and patch forward references.
+
+For case label expressions that resolve to a compile-time constant — integer literals, named
+constants — the Reviewer recognizes the constant nature of the label and assigns it an immediate
+parameter id; the compare instruction takes the form cmp key_reg, imm32 (or, for very large constants,
+cmp key_reg against a RIP-relative literal-pool entry). For a non-constant label expression, the
+Reviewer treats it as a normal expression: it gets a register parameter id, and the dispatch chain
+emits its full evaluation before each compare. Compare-chain lowering tolerates either form; the
+cost difference is the per-iteration evaluation work, which for a non-constant label is the same
+work the expression would have cost in any context.
+
+Empty conjunctions. An if with an empty then-body and no else compiles to just the cond's side
+effects — the test and jump are elided because there is nothing to skip over. The Reviewer detects
+this case during prep and writes a degenerate codegen-prep payload that the Coder treats as no-op
+past the cond. Switch with no cases compiles to just the key's evaluation. An empty case body
+compiles to just the unconditional-jump-to-end.
+
+6.3 LOOPS
+---------
+
+while. Tree shape:
+
+    while [cond, body]
+
+cond is an expression subtree; body is a statement sequence (block node).
+
+Reviewer prep. Assigns two jump-label ids: label_continue (where the next iteration begins) and
+label_break (where the loop exits to). Pushes these onto its loop-label stack while recursing into
+body, so that break and continue nodes inside body can resolve their targets. Recurses into cond
+and body to assign their parameter ids.
+
+Coder codegen, in order:
+
+    [record label_continue's offset]
+    [emit cond's blocks, leaving boolean in cond's assigned register]
+    [emit test reg, reg]
+    [emit jz label_break]
+    [emit body's blocks]
+    [emit jmp label_continue]
+    [record label_break's offset; patch forward references]
+
+The test-and-jcc and unconditional-jump blocks are the same fixed CodeBlocks-table entries from
+6.2; only the label targets differ.
+
+do-while. Tree shape:
+
+    do-while [body, cond]
+
+The cond is evaluated after the body, and the loop iterates while cond is non-zero.
+
+Reviewer prep. Same as while: assigns label_continue and label_break, pushes them for break/continue
+resolution.
+
+Coder codegen:
+
+    [record label_loop_top's offset]
+    [emit body's blocks]
+    [record label_continue's offset]
+    [emit cond's blocks]
+    [emit test reg, reg]
+    [emit jnz label_loop_top]
+    [record label_break's offset; patch forward references]
+
+do-while needs a third synthetic label_loop_top because continue targets the cond evaluation while
+the iteration jump targets the body's start. The Reviewer assigns three jump-label ids for do-while
+and two for while.
+
+for. Tree shape:
+
+    for [init, cond, update, body]
+
+init is a statement (a declaration assignment is the canonical case, but any statement form is
+permitted); cond is an expression; update is an expression evaluated for its side effects; body is
+a block. Any of init, cond, and update may be empty no-op nodes.
+
+Reviewer prep. Assigns three jump-label ids: label_loop_top, label_continue, label_break. The
+init's declaration scope is the body — variables declared in init are visible to cond, update, and
+body, but not after the for-loop. Pushes label_continue and label_break for break/continue
+resolution while recursing into body.
+
+Coder codegen:
+
+    [emit init's blocks]
+    [record label_loop_top's offset]
+    [emit cond's blocks]
+    [if cond is non-empty, emit test reg, reg and jz label_break]
+    [emit body's blocks]
+    [record label_continue's offset]
+    [emit update's blocks]
+    [emit jmp label_loop_top]
+    [record label_break's offset; patch forward references]
+
+When cond is empty (the for(;;) idiom), the test-and-jz pair is elided — the loop runs forever
+unless broken from inside. Empty init and empty update similarly produce no emitted blocks.
+
+for-in. Tree shape:
+
+    for-in [var-decl, source, body]
+
+var-decl is a declaration node binding the iteration variable; source is an expression resolving to
+something iterable; body is a block.
+
+source resolves to one of three categories at Morpher convergence:
+
+    a Generator<T> handle              — produced by an expression whose generator body the merger
+                                          could not inline (e.g., a generator passed across a
+                                          function boundary, stored in a variable, returned from a
+                                          function call). Iteration calls .next() through the
+                                          handle.
+
+    a generator-producing expression   — a direct call to a generator function or a range expression
+       whose body the merger inlined     (0..n, etc.). The merger has unfolded the generator's body
+                                          into the for-in's parent scope, with each yield rewritten
+                                          to "assign to var-decl and execute body, then resume".
+
+    a container or user type           — has an iterator method that produces a Generator<T>.
+                                          The for-in calls the iterator method to get a generator
+                                          handle, then iterates as in the first category.
+
+Each category has its own §7 chapter coverage; what's common across them is the loop scaffolding
+the §6 framework supplies.
+
+Reviewer prep. Assigns label_continue and label_break. Calls the source's iterator method (or
+records that the source is already a generator handle, or that its body has been merged) — the
+result is a Generator<T> reference that lives for the duration of the loop. Assigns a parameter id
+for that reference (typically a stack slot, since it must survive any function calls inside the
+body). Assigns a parameter id for var-decl (typically a register, refreshed each iteration).
+Recurses into body with the loop labels pushed.
+
+Coder codegen, for the Generator<T>-handle and iterator-producing categories:
+
+    [emit source's blocks (or the iterator-method call), leaving generator handle in its slot]
+    [record label_continue's offset]
+    [emit a .next() call on the generator handle; the call returns a control-flow variant whose
+     non-end value is the yielded element]
+    [emit a tag-check on the variant, branching to label_break if the end variant was produced]
+    [emit a store from the variant's payload into var-decl's parameter slot]
+    [emit body's blocks]
+    [emit jmp label_continue]
+    [record label_break's offset; patch forward references]
+
+The .next() call is a Table-A operation keyed by (source's baseType, "next-element"), supplied by
+the source's §7 chapter. The tag-check is the standard variant-tag-check skeleton from 6.6 (is-
+checks). For-in's contribution at the §6 level is the loop scaffolding; the per-source-type
+machinery is §7's responsibility.
+
+For the merger-inlined category, the for-in's codegen looks substantially different — the
+generator's body has been unfolded into the loop, and what would have been .next() calls have
+become inline yield-to-var-decl-and-recurse-to-body sequences. The Morpher's merger transforms the
+parse tree to make this representation explicit before the Reviewer runs, so the Reviewer and
+Coder see a parse tree that no longer has a separate Generator<T> source — it has body-inlined
+flow and yield-rewriting markers. Generator merging is the subject of §7's generator chapter.
+
+break, continue. Tree shape:
+
+    break [optional source-label]
+    continue [optional source-label]
+
+Each carries an optional source-label identifying which enclosing loop to break or continue from.
+Without a label, the innermost enclosing loop is targeted.
+
+Reviewer prep. Walks its loop-label stack from top to find the matching loop: the innermost when
+no source-label is given, or the first one whose source-label matches when one is. Records the
+matching loop's label_break (for break) or label_continue (for continue) into the break/continue
+node's payload. Emits a diagnostic if no matching loop is in scope.
+
+Coder codegen. Emits a single unconditional-jump block whose target is the recorded label. The
+patch mechanism resolves the displacement when the loop's label is recorded.
+
+Empty loops. A while or for with an empty body still emits the cond-evaluation and the loop-back
+jump — the body's emptiness doesn't elide the loop, only its body. A for with no init, cond, or
+update and an empty body compiles to a single unconditional jump to itself, which the Coder emits
+without optimization; pinning out a "trivial infinite loop" pattern is not worth the codegen
+machinery.
+
+6.4 RETURN, YIELD, AND SPAWN
+----------------------------
+
+spawn. Tree shape:
+
+    spawn [body]
+
+body is a block whose type-propagation runs as an independent context. The spawn-node itself is a
+verb — it produces a Promise<T> where T is the type body's last expression resolves to (or the
+empty type if body is procedure-shaped).
+
+Reviewer prep. Treats spawn as a function call into the xmc runtime's task-creation entry point.
+The body is compiled as a separate function (a "spawned function") with its own function-
+declaration node synthesized by the Reviewer; its parameters are the variables it captures from
+the enclosing scope, captured by value or by reference per XMC §17's capture inference rules. The
+synthesized function-declaration node is added as a child of the enclosing function's declaration
+node, mirroring the scope nesting of the original spawn body. The spawn-node's compiled form is a
+call to runtime_spawn(spawned_function_address, captured_arg_block), which returns a Promise<T>
+handle into the spawn-node's assigned result register.
+
+Coder codegen for the spawn-node itself:
+
+    [emit blocks computing the captured-arg block — typically a small stack-allocated struct with
+     pointers and values for each captured variable]
+    [emit blocks loading the spawned-function's address as a SymbolKey parameter]
+    [emit the call instruction to runtime_spawn]
+    [the Promise<T> handle returned in RAX is moved to the spawn-node's assigned result register
+     if different from RAX]
+
+The spawned function follows the same compilation path as any other nested function. It is private
+(not externally callable) but the Coder, Emitter, and Linker treat it normally — it appears in the
+project .obj's exports like any other function, with a synthesized name. The runtime's task
+scheduler invokes it through its function pointer; xmc compiles nothing special into the spawned
+function beyond the captured-parameter unpacking at its entry.
+
+Capture-by-reference for variables that outlive the spawn site is straightforward (the captured-
+arg block holds a pointer into the parent stack frame, and the parent stack frame is guaranteed
+alive because the spawn-node's parent function awaits the Promise<T> before returning). Capture-
+by-reference for variables whose lifetimes don't span the await is a Morpher-detected error at the
+spawn site. Capture-by-value copies the variable's representation into the captured-arg block;
+arc-headered values get refcount increments through their normal copy semantics.
+
+The xmc runtime is statically linked. runtime_spawn and the rest of the scheduler are ordinary
+xmc functions — written in xmc, compiled by xmc, and linked into every program that uses spawn.
+The runtime's interaction with the OS goes through kernel32: CreateThread for worker-pool thread
+creation, WaitForSingleObject and friends for blocking primitives where the language's atomics
+and concurrent data structures are insufficient. xmc programs do not link the C runtime; they
+import only kernel32.dll for the OS surface that genuinely cannot be reimplemented (thread
+creation, kernel-managed synchronization primitives, file I/O, memory mapping). The xmc runtime
+itself is the subject of a future chapter and is not described further here.
+
+Atomics on language-level operations (concurrent rmask bit, atomic counters in arc headers, the
+operations on concurrent containers) compile to lock-prefix x64 instructions directly — lock
+cmpxchg, lock xadd, and so on. No library call mediates them. Where xmc-level synchronization
+primitives need to block (when an empty concurrent queue's consumer must wait for a producer, for
+example), the relevant container's §7 chapter describes the kernel32-mediated wait, but the
+operation looks like an ordinary container method call from the spawn perspective.
+
+ 
+6.5 PIPE, ERROR-BLOCK, AND ON-ERROR CLAUSES: ERROR PROPAGATION AND HANDLING
+---------------------------------------------------------------------------
+ 
+xmc functions return a single value. Errors are values: a function that may fail declares its
+failure modes by including them as variant tags in its return type. variant<User, NotFound>
+is a function that returns either a User or a NotFound; variant<zs8, IoError, ParseError> is one
+that returns either a string or one of two error kinds. Functions whose return type is a plain
+type (User, zs8) cannot return errors — failures inside their bodies are absorbed at the
+function boundary and the function returns null of the success type instead.
+ 
+xmc has two source-level constructs that establish error-handling regions. The pipe operator |
+is an expression-level construct that handles errors from a single subexpression, with the
+handler inline. The error-block construct {? ?} is a statement-level region where any
+contained fallible call's failure causes execution to skip the rest of the region. Following
+an error-block, zero or more OnError clauses declare what to do for specific error kinds when
+the block exited via failure.
+ 
+This subsection covers the codegen for both, and the cross-cutting machinery they share —
+listening-call dispatch, handler bindings, error-data copying. Pipe handles a value-producing
+subexpression and substitutes a handler value on failure. Error-block defines a skip-on-failure
+region whose post-block OnError clauses handle errors that caused the skip.
+ 
+Parse-tree shape and flags. Two flags on each parse node, set by the Parser as it constructs
+the tree:
+ 
+    error_trap (bool) — set on every node inside a pipe's primary expression or an error-
+        block's body. Inherited downward during construction: when the Parser pushes into an
+        error-block or pipe-primary, error_trap becomes true for every descendant; on exit, it
+        returns to its previous value.
+ 
+    error_kinds (vector of error tag references) — the set of error kinds the enclosing
+        function's return-type variant accepts. Set on every node inside the function body.
+        For a function with return type variant<User, NotFound>, error_kinds is {NotFound}
+        for every node in its body. For a function returning a plain User, it is empty.
+ 
+A fallible call is "listening" if error_trap is true on its node, or if any of the callee's
+throw kinds intersects error_kinds. Otherwise it is "discarding."
+ 
+Tree shape, pipe.
+ 
+    pipe [primary-expr, handler-body]
+ 
+The pipe is an expression. primary-expr is the subexpression whose errors the pipe handles;
+handler-body is a block whose final expression's value substitutes for the primary's value
+when an error occurs. The primary-expr subtree has error_trap = true.
+ 
+Tree shape, error-block.
+ 
+    error-block [body]
+ 
+body is a statement sequence. The error-block establishes a region inside which any contained
+fallible call's failure causes immediate exit to the region's end. The body subtree has
+error_trap = true; fallible calls inside the body are listening, with dispatch_target set to
+the block's error-dispatch label.
+ 
+The error-block is a standalone construct. It does not contain handler clauses as children.
+Without any following OnError clauses, the error-block simply skips the rest of its body on
+failure and proceeds with whatever follows.
+ 
+Tree shape, on-error clause.
+ 
+    on-error [optional-error-kind, body]
+ 
+OnError clauses are statement-level constructs that follow an error-block. Each clause declares
+which error kind it catches (one named kind, or none for a catch-all) and a body to execute
+when the preceding error-block exited via that kind of failure. The Parser recognizes the
+pattern (an error-block followed by zero or more OnError clauses) and links each OnError node
+to its preceding error-block via a back-pointer, so the block knows what dispatch table to
+build.
+ 
+A catch-all OnError clause (with no kind named) binds it as XmcError, the language's base
+error type. Within the body, the programmer can narrow further via is-checks against specific
+error kinds.
+ 
+An OnError clause not preceded by an error-block is a syntax error.
+ 
+Reviewer prep, error-block. Walks the block's body subtree. For each fallible call inside, the
+listening_flag is set (reflecting the error_trap on the call's node) and the dispatch_target is
+the block's error-dispatch label. The Reviewer assigns the block's error-dispatch label and
+the block's end label as jump-label ids in the per-function namespace.
+ 
+Reviewer prep, on-error clauses. For each on-error clause following an error-block, the
+Reviewer assigns a body label (the jump target where the clause's handling code begins). It
+populates a dispatch table on the error-block's payload: for each on-error clause, the
+clause's caught kind (or null for catch-all) and its body label. The dispatch table is
+consulted by the Coder when emitting the block's dispatch sequence.
+ 
+The Reviewer also assigns a stack slot for each clause's it-binding. Different clauses' it-
+bindings can share the same slot when their error types are the same size, or each can have
+its own slot — the choice is the Reviewer's optimization decision and doesn't affect the
+codegen contract.
+ 
+Reviewer prep, pipe. The pipe is an expression — its primary expression's listening setup
+matches the inline handler. The Reviewer assigns a single body label for the handler and
+treats the dispatch as a single-target case (the handler catches everything). The pipe's
+result type is the union of the primary's success type and the handler's expression type
+(the handler is always an expression in pipe form, since pipe is itself an expression).
+ 
+Reviewer prep, listening call sites. For each fallible call site, the Reviewer populates:
+ 
+    listening_flag — set per the rule above.
+    return_used_flag — true if the call's return value is bound to a receiver or consumed by
+        a surrounding expression.
+    dispatch_target — for listening sites, the jump-label id of the destination: the
+        enclosing trap's error-dispatch label (for sites inside a pipe primary or error-
+        block body), or the enclosing function's epilogue label (for sites listening because
+        of error_kinds match).
+    routed_kinds — for listening sites, the subset of the callee's throw kinds that this
+        site actually routes. Other kinds (if any) are filtered: they reach the call site
+        but the dispatch ignores them, and execution continues with null in RAX.
+ 
+For each function declaration, the Reviewer also computes:
+ 
+    needs_listening_flavor — true if any known caller listens, or if the function is exported.
+    needs_discarding_flavor — true if any known caller discards, or if the function is
+        exported.
+    return_value_observed — true if any known caller reads the return value, or if the
+        function is exported with a non-void return type.
+ 
+Caller-side codegen, per fallible call site. The Coder emits, in order:
+ 
+    Emit the call. The callee symbol carries the listening or discarding suffix per
+    listening_flag.
+ 
+    If listening_flag is true: emit a test rdx, rdx; jnz dispatch_target. The dispatch_target
+    handles the error and the post-handler control flow proceeds from there.
+ 
+    If return_used_flag is true: arrange for RAX to be moved to the receiver's parameter id.
+    On listening calls that detected an error and jumped to dispatch_target, the move is
+    skipped (control already left this site). On discarding calls or successful listening
+    calls, RAX holds the success value (or the success type's null on a discarded failure).
+ 
+The test+jnz is the only per-call instruction added by listening. Non-listening calls emit no
+extra instructions; they are bit-for-bit indistinguishable from a non-throwing call.
+ 
+No caller-side error-pointer setup is needed. The callee writes the error object into its own
+stack frame on failure and sets RDX to point there; the caller reads through RDX after the
+call returns.
+ 
+The error data is in the just-returned callee's stack frame, which remains intact at those
+addresses until the caller's next stack-modifying instruction. The caller's dispatch sequence
+(test+jnz, then read the error tag, then dispatch) does not modify the stack between the
+return and the read, so the error data is reachable.
+ 
+On entering an on-error clause's body (or a pipe handler's body), the Coder emits a copy of
+the relevant error fields from the location pointed to by RDX into the clause's it-binding
+stack slot (assigned by the Reviewer for the binding, like any other local). The body then
+executes against these copied values, no longer dependent on the callee's stack frame
+remaining intact.
+ 
+Callee-side codegen, per function flavor:
+ 
+    Listening flavor (compiled when needs_listening_flavor is true). On entry, no register
+    clearing is needed — the convention is that listening callers will check RDX after
+    return, so the callee writes RAX, RDX, and the error object at appropriate points along
+    its body's paths.
+ 
+    On a success-path return: write the success value to RAX, emit xor edx, edx, return.
+ 
+    On a failure-path return (when the function's body reaches a point where a contained
+    fallible call's error fits error_kinds, or when the function itself raises): write the
+    success type's null to RAX, write the error object into the function's own error-object
+    stack slot, set RDX to the address of that slot, return. The slot is reserved at function
+    prologue (one fixed-size slot, sized for the maximum error object the function can
+    produce).
+ 
+    Discarding flavor (compiled when needs_discarding_flavor is true). On entry, no register
+    work. The function body proceeds, and on any internal failure path, the failure is
+    absorbed locally — its error is not propagated, its result is null of the type the
+    failure produced. On a success-path return: write the success value to RAX (only if
+    return_value_observed), return. On a failure-path return: write null of the success type
+    to RAX (only if return_value_observed), return. RDX is not touched.
+ 
+For non-fallible functions (the function's body has no internal failure paths and its return
+type contains no error kinds), only one entry is compiled. Success-path returns write the
+success value to RAX (if return_value_observed) and return. There is no failure path. RDX is
+not part of the convention.
+ 
+Bifurcation by call site. The Coder emits both flavors as separate symbols when
+needs_listening_flavor and needs_discarding_flavor are both true:
+ 
+    foo$listen — the listening flavor, suffixed at compile time.
+    foo$nolisten — the discarding flavor.
+ 
+Cross-Xmo calls and exports always emit both for fallible functions, because callers across
+Xmo boundaries are unknown to the function's compilation. Local-only functions emit only the
+flavor(s) actually used.
+ 
+Both flavors share the function's body except for the failure-path epilogue handling
+described above. The shared body is emitted once; the two entry points and their flavor-
+specific failure epilogues are emitted as small distinct stubs.
+ 
+Coder codegen, per error-block:
+ 
+    [emit blocks for the block's body in source order; fallible calls inside the body are
+     listening with dispatch_target = error_dispatch_label]
+    [emit jmp label_end_block]                   ; success-path exit, skip dispatch and clauses
+    [record error_dispatch_label's offset]
+    [emit mov rax, [rdx]]                         ; load error tag word
+    [for each on-error clause in source order:]
+        [if clause's caught-kind is non-null:]
+            [emit cmp rax, kind_tag_immediate]
+            [emit je clause_body_label]
+        [if clause's caught-kind is null (catch-all):]
+            [emit jmp clause_body_label]
+    [emit jmp label_end_block]                   ; no clause matched; skip past clauses
+    [for each on-error clause in source order:]
+        [record clause_body_label's offset]
+        [emit copy of error fields from [rdx + offset] into clause's it-binding stack slot]
+        [emit blocks for the clause's body]
+        [emit jmp label_end_block]
+    [record label_end_block's offset; patch forward references]
+ 
+Coder codegen, per pipe expression:
+ 
+    [emit blocks for primary-expr, listening with dispatch_target = pipe_handler_label]
+    [emit jmp pipe_end_label]                     ; success-path exit; skip handler
+    [record pipe_handler_label's offset]
+    [emit copy of error fields from [rdx + offset] into the handler's it-binding stack slot]
+    [emit blocks for handler-body, leaving its expression's result in RAX]
+    [record pipe_end_label's offset; patch forward references]
+ 
+The pipe's result is in RAX after either path: from the primary on success, from the handler
+on failure. The parent expression consumes RAX as the pipe's value.
+ 
+Each on-error clause ends with a jump to label_end_block, so clauses don't fall through into
+each other. A clause that wants its own non-normal exit (re-throwing a different error,
+returning from the function, etc.) does so explicitly through return, break, or another
+listening call.
+ 
+Nesting. Error-blocks and pipes nest: an error-block inside a pipe's primary expression, a
+pipe inside an error-block's body, an error-block inside another error-block. The outer
+construct's dispatch handles errors that propagate past the inner construct (or, in the case
+of an inner block with no following on-error clauses, errors that simply caused the inner
+block to exit). The Reviewer's prep walks each construct independently, and the call-site
+dispatch_target points to the innermost trap whose region contains the call.
+ 
+Variant payloads. A control-flow variant's payload is the value being passed forward when the
+variant is the normal kind, and is the error context when the variant is non-normal. The
+Reviewer arranges that the payload occupies a known parameter id whether the variant turns
+out to be normal or non-normal: typically the same register or stack slot, with the layout
+determined by the variant type's declaration. The Coder's tag-check-and-branch machinery
+does not move the payload — only the tag — so the handler bodies and the post-routing
+normal-flow code both find the payload already in place.
+ 
+Errors that propagate without being handled in any nearby construct. If a fallible call's
+errors don't intersect any enclosing trap (no error-block above, no pipe), and the call is
+inside a function whose return-type variant doesn't include those error kinds, the call's
+errors are discarded — the call site is non-listening, the callee runs in its discarding
+flavor, and on failure the call's success-type null appears in RAX and execution continues.
+Whether the resulting null causes a problem downstream is the programmer's responsibility:
+xmc's null-contagion rules (XMC §27d) handle null values that flow through subsequent
+operations.
+ 
+If the function's return type does include the error kinds, the call's errors propagate to
+the function's epilogue: the call site is listening with dispatch_target = function epilogue
+label; on failure the function returns the propagated error to its caller via the listening
+flavor's epilogue.
+ 
+A clause naming an error kind that none of the body's fallible calls can produce is a
+compile-time warning (dead clause).
+ 
+Cost summary. For non-listening, non-throwing calls: zero overhead at the call site, zero
+overhead at the function boundary. The compilation is identical to a plain C function call.
+For non-listening calls to a throwing function: zero overhead at the call site; the callee's
+discarding flavor adds at most one xor in its failure-path epilogue when return_value_observed
+is true. For listening calls: one test+jnz at the call site, one xor edx, edx on the callee's
+success path, plus the failure-path error-write when needed. The per-call overhead in the
+listening case is the test+jnz, which branch prediction handles as essentially free in the
+success case.
+
+
+6.6 IS-CHECKS
+-------------
+
+The is-check operator (XMC §12g) tests whether a value's runtime kind matches a named type. xmc
+has two skeleton families for is, selected by the operand's baseType kind:
+
+    Variant tag check — when the operand's baseType is a variant (control-flow variant or
+        ordinary tagged variant), the check compares the variant's tag word against the
+        compile-time-known tag value for the named kind.
+
+    Class-hierarchy check — when the operand's baseType is a class type, the check compares
+        the instance's vtable pointer against the compile-time-known vtable address for the
+        named class.
+
+Both produce a boolean result that the surrounding expression context consumes. The is-check
+node is a verb: it has one child, the operand, and produces a value into a Reviewer-assigned
+register or stack slot.
+
+Variant tag check. The variant's tag word is at a fixed offset within the variant's storage
+(offset 0 by convention). The check loads the tag word and compares against the named kind's
+tag value, an immediate the Morpher assigned when the variant type was declared.
+
+Coder codegen, in order:
+
+    [emit a load of the tag word from the operand's storage location]
+    [emit cmp tag_register, tag_immediate]
+    [emit setz result_register]    ; or sete depending on the assembly mnemonic preference
+
+The result_register holds 0 or 1, which the surrounding expression treats as a boolean.
+
+For the common case of is-check inside a conditional (if (x is Foo) { ... }), the Coder can
+elide the materialization of the boolean: the cmp's flag state is consumed directly by the
+conditional jump in the if. The Reviewer recognizes this pattern during prep — when the
+is-check's parent is the cond slot of an if, while, or for — and writes a "fused" flag into
+the is-check node's payload. The Coder, seeing the fused flag, omits the setz and emits the
+conditional jump (jne for "is" failure, je for "is" success) directly against the cmp's flags.
+This saves two instructions in the common case.
+
+Class-hierarchy check. The instance carries a vtable pointer at a fixed offset (offset 0 by
+convention; the same slot the variant tag check uses for variants — class instances and variant
+boxes don't coexist as the same baseType, so the slot is unambiguous per type).
+
+The check loads the vtable pointer and compares against the compile-time-known vtable address
+for the named class. xmc's class hierarchy is static: each class has exactly one vtable address,
+known at link time, and an instance's vtable pointer is set at allocation time and never
+changes. So a check for "is this instance a Foo" is a pointer-equality test against Foo's
+vtable address.
+
+For checks against a base class (where derived classes also satisfy the check), the test is
+slightly different — the operand's vtable might be Foo's, or it might be a derived class that
+inherits from Foo. xmc handles this by emitting one cmp per class in the matching set: Foo's
+vtable address, plus each derived class's vtable address. The result is true if any cmp
+succeeds. For class hierarchies with many derived classes, this can become expensive; the
+Reviewer can fall back to a different scheme (a per-class type-id-range check, where the
+class's type id is compared against the range covering all subclasses) for hierarchies above a
+threshold. The threshold and fallback machinery are not part of the initial implementation;
+the simple per-class compare-chain is sufficient for the kinds of class hierarchies xmc
+programs are expected to use.
+
+Coder codegen, in order:
+
+    [emit a load of the vtable pointer from the operand's storage location]
+    [for each vtable address in the matching set, emit cmp + sete-or-jcc as in the variant case]
+
+The matching set's contents are computed by the Reviewer during codegen-prep: for the named
+class C, the set is C plus every class that derives from C (transitively). This set is fixed
+at compile time and serialized into the type's metadata.
+
+The fused-with-conditional optimization works the same way for class checks as for variant
+checks. When the is-check sits in a cond slot, the Coder emits the cmps and a single
+conditional jump on the OR of their results, rather than materializing a boolean.
+
+Operand baseType dispatch. The Coder, on encountering an is-check node, inspects the operand
+child's baseType to choose between the two skeleton families. The choice is a per-baseType
+classification: variant baseTypes (the Variant base type and its tag-bearing flavors) get the
+variant tag check; class baseTypes get the class-hierarchy check. Other baseTypes (i32, list,
+etc.) cannot be the operand of an is-check; the Morpher emits a diagnostic at the source site.
+
+Diagnostic-only is-checks. When the Morpher determines that a particular is-check's result is
+known at compile time (the operand's baseType is statically Foo, the check is "x is Foo"
+which is unconditionally true), the Reviewer marks the node with a constant-result flag and
+the Coder emits a constant 1 (or constant 0 for unconditionally-false checks) instead of the
+runtime check. This is a small constant-folding pass that falls out naturally from the type
+information; the Reviewer also emits a warning when the check is known unconditionally true
+(probably a redundant test) or unconditionally false (probably a logic error).
+
+
+6.7 LITERAL-VALUE PATCHING
+--------------------------
+
+Literal nodes — integer, floating-point, character, string, boolean, and null — produce a
+compile-time-known value at runtime. Their codegen is a parameter-fill problem: the value is
+known to the compiler, the question is how it gets into the instruction byte stream.
+
+§4 and §6.1 cover refinement-keyed and parameter-id-keyed fills via Tables E and F. Literals
+add a third keying: by value. The mechanism is a small extension of the Tables E/F model.
+
+Literal node payload. Each literal node carries:
+
+    base type — the literal's resolved type (i32, f64, zs8, b, etc.).
+    value bytes — the literal's compile-time-known value, stored in the parse-node arena as
+        the appropriate width (4 bytes for i32, 8 bytes for f64, the zs8's char data plus
+        length for strings, etc.).
+    parameter id — assigned by the Reviewer per §6.1, identifying where the literal's value
+        should land at runtime: typically a register, sometimes a stack slot, sometimes an
+        immediate baked into a parent verb's instruction.
+
+The decision of which parameter-id flavor a literal gets is the Reviewer's, made from the
+parent verb's context:
+
+    Immediate-fold case. When the literal's value fits in an instruction-immediate field of
+    the parent verb (small integers in arithmetic, comparison constants, address-mode
+    displacements), the Reviewer assigns an immediate parameter id. The literal's value is
+    patched directly into the parent verb's instruction byte stream. The literal node emits
+    no code blocks of its own; its contribution is the byte pattern in the parent's
+    instruction.
+
+    Register-load case. When the literal's value doesn't fit as an immediate to the parent's
+    instruction but does fit in a 32- or 64-bit register, the Reviewer assigns a register
+    parameter id. The literal node emits its own code block — a "load immediate into
+    register" sequence — and the parent verb consumes the register.
+
+    RIP-relative literal case. When the literal's value is too large for a register-load
+    immediate (full 64-bit pointers, doubles, large struct constants), the Reviewer assigns a
+    RIP-relative literal-pool parameter id. The literal's value bytes are added to a
+    per-function literal pool that the Emitter places in the function's code section, and the
+    literal node emits a "RIP-relative load" instruction whose displacement points at the
+    pool entry.
+
+    Stack-slot case. When a literal is referenced from multiple places in a function and the
+    Reviewer determines materializing it once into a stack slot is cheaper than re-emitting
+    the load each time, the literal gets a stack-slot parameter id. The Reviewer-inserted
+    initialization code populates the slot at function entry; subsequent references read
+    from the slot. This case is rare for literals (constants are usually cheaper to re-load
+    than to keep in stack memory) but applies when the literal's load involves a RIP-relative
+    pool entry that's expensive enough to amortize.
+
+Coder mechanism. For the immediate-fold case, the parent verb's code block is a parameterized
+template — its instruction-byte sequence has a slot at a known offset where an immediate goes,
+and the Tables-E/F lookup for the parent's parameter slot produces a "literal value patch"
+parameter block. The parameter block's content depends on the literal's value: for a small
+positive integer, the block holds the integer's bytes in the right encoding; for a negative
+integer, the sign-extended bytes; for a character, the character's encoding bytes; for an
+address (like for a string literal), the SymbolKey of the string's data location, which the
+Emitter turns into a relocation.
+
+The lookup key in Tables E and F is normally the parameter-id symbolic name. For literals,
+the key is extended with the literal's value (or a hash of it for large literals). This means
+each distinct value-patch of a literal gets its own entry in Table F. For frequently-used
+literals (0, 1, common boolean values, null), the entries are precomputed and shared; for rare
+or unique literals, the Reviewer creates a Table-F entry on demand during its pass.
+
+Literals as values for ordinary verbs. Outside the immediate-fold case, a literal is treated
+the same as any other value-producing noun: it sits at a tree position, has an assigned
+parameter id, and the parent verb consumes the parameter id without caring whether it came
+from a literal or from another verb. This is the most common case — a literal in a function
+call (mov rcx, 42 followed by call), in an assignment (mov [rbp-8], 42), in a comparison's
+right side (cmp rax, 42).
+
+String literals. zs8 string literals are handled specially because the value bytes need to
+live in static memory, not in the instruction stream. The Parser allocates the string's bytes
+into the per-Xmo arena's string-pool area and assigns the literal a SymbolKey-flavored
+parameter id. The Coder emits a "load address of named symbol" instruction (LEA against a
+RIP-relative address); the Emitter records the relocation. The Linker resolves the address
+at link time.
+
+For string literals that occur multiple times in a program with the same byte content, the
+Linker (or, for cross-Xmo cases, the Emitter when it assembles the .obj) can deduplicate to a
+single backing storage. This is a standard linker behavior and xmc's Emitter participates in
+it. Whether deduplication happens is a project-level configuration; the default is yes for
+release builds, no for debug builds.
+
+null literals. The null literal of any type compiles to the type's null pattern — typically
+all-zeros, but for some types (a non-null-by-construction pointer, a class with non-zero-
+initialized invariants) the null pattern is something else. The Morpher resolves the literal
+to its null pattern based on the literal's resolved baseType; the Reviewer assigns the
+parameter id; the Coder emits the bytes accordingly. For the all-zeros case, this is the
+"xor reg, reg" idiom (zero-cost in register renaming on modern x64). For other cases, it's
+a plain immediate or RIP-relative load.
+
+Compile-time-evaluated expressions. Some expressions whose operands are all literals
+(2 + 2, "abc" + "def", true && false) are constant-folded by the Morpher into a single
+literal node. The Reviewer and Coder treat the result as a literal of the appropriate type,
+applying the same patching rules above. The folding pass is the Morpher's responsibility
+because it has the type information needed to determine that all operands are literal-valued.
+
+Boolean literals. true and false compile to constants 1 and 0 respectively. The Coder fuses
+their use with a comparison or conditional jump when possible (the same fusing optimization
+as is-checks in §6.6) — emitting a direct unconditional jump or its absence rather than
+materializing the boolean. For most practical uses (if (true) { ... } is rare), no fusion is
+needed; for compile-time-constant conditions emerging from constant folding (an is-check that
+folded to false), fusion matters.
+
+ 
+6.8 WORKED EXAMPLE
+------------------
+ 
+This walks the framework end-to-end on a small piece of code that exercises literal patching,
+fallible calls, the listening mechanism, error-block dispatch, on-error clauses, arithmetic,
+and a non-fallible call.
+ 
+Source:
+ 
+    {?
+        var x = readConfig();
+        var n = parseInt(x);
+        print(n + 1);
+    ?}
+    OnError(IoError) { LogIoError(it); }
+    OnError(ParseError) { LogParseError(it); }
+ 
+Where readConfig is declared variant<zs8, IoError>, parseInt is declared variant<i32,
+ParseError>, print is declared void (non-fallible), and the on-error clauses handle IoError
+and ParseError respectively.
+ 
+Parser. Builds the parse tree:
+ 
+    sequence:
+        error-block
+            body:
+                assignment(x = readConfig())
+                assignment(n = parseInt(x))
+                expression-statement(print(n + 1))
+        on-error(IoError, body: LogIoError(it))
+        on-error(ParseError, body: LogParseError(it))
+ 
+The Parser sets error_trap = true on every node inside the error-block's body subtree. The
+on-error clauses that follow have their own error_trap state — typically false unless they
+themselves are inside an outer trap. The Parser also links each on-error clause to its
+preceding error-block via a back-pointer, so the block knows what dispatch table to build.
+ 
+Each node also gets error_kinds populated: empty for the example, since the enclosing
+function is presumed to be one whose return type doesn't accept IoError or ParseError. The
+relevant traps are the error-block, not the function.
+ 
+Morpher. Resolves types:
+ 
+    readConfig's return type: variant<zs8, IoError>. Throw kinds: {IoError}.
+    parseInt's return type: variant<i32, ParseError>. Throw kinds: {ParseError}.
+    print's return type: void. Throw kinds: {}.
+ 
+    x's type (from assignment with var receiver): zs8 (the success tag of readConfig's
+        variant).
+    n's type (from assignment with var receiver): i32 (the success tag of parseInt's
+        variant).
+    n + 1: i32. The literal 1 is i32. The + operator on i32 is the standard skeleton from
+        i32's §7 chapter.
+ 
+The Morpher narrows refinements through the chain — x is non-fluid, non-resizable zs8 (a
+string literal in static memory); n is fixed, homogenous, serial i32 (default i32 profile);
+the i32 result of n+1 inherits the same.
+ 
+For each fallible call:
+ 
+    readConfig: error_trap is true on the call site (inside the error-block body).
+        Listening. Throw kinds {IoError} all route to the error-block's error-dispatch
+        label.
+    parseInt: error_trap is true. Listening. Throw kinds {ParseError} route to the error-
+        dispatch label.
+    print: not fallible. No listening machinery anywhere.
+ 
+Reviewer. Per-Xmo task after Morpher convergence. For this function:
+ 
+    Assigns parameter ids to nouns and value-producing verbs:
+        x → stack-slot id (held across multiple uses, including the parseInt call argument)
+        n → stack-slot id (held across the n+1 expression)
+        the literal 1 → immediate (folds into the parent + verb's instruction)
+        n + 1's result → register id (RAX is the natural choice; it'll be moved to RCX as
+            print's first argument)
+        the variable being passed to print → register RCX (Windows ABI for first arg)
+        the it-binding inside each on-error clause → stack-slot id (clause-local)
+ 
+    Computes per-function totalStackSize: stack slots for x, n, the it-binding slots, plus
+    standard frame overhead. Note: the listening-call error-object slot is the callee's
+    responsibility (each fallible function reserves its own slot in its own prologue), not
+    the caller's.
+ 
+    Decides the function's flavor based on its callers — for this example, assume the
+    enclosing function is local to the Xmo and called once non-listening; only the
+    discarding flavor is compiled.
+ 
+    For each call site, populates the codegen-prep payload:
+ 
+        readConfig call site: listening_flag = true, return_used_flag = true,
+            dispatch_target = error_dispatch_label, routed_kinds = {IoError}.
+        parseInt call site: listening_flag = true, return_used_flag = true,
+            dispatch_target = error_dispatch_label, routed_kinds = {ParseError}.
+        print call site: listening_flag = false, return_used_flag = false. Just a plain
+            call.
+ 
+    Inserts no conversion nodes (types line up). Inserts no null verbs (no unresolved
+    types).
+ 
+    Builds the error-block's dispatch table from its linked on-error clauses:
+        (IoError, IoError_clause_label)
+        (ParseError, ParseError_clause_label)
+ 
+    Assigns jump-label ids:
+        error_dispatch_label
+        end_block_label
+        IoError_clause_label
+        ParseError_clause_label
+ 
+Coder. Walks the parse tree, picks code blocks for each node:
+ 
+    Function prologue: standard prologue plus stack reservation for totalStackSize.
+ 
+    For x = readConfig():
+        emit call readConfig$listen
+        emit test rdx, rdx
+        emit jnz error_dispatch_label
+        emit mov [rbp - x_offset], rax        ; store success value (zs8 handle)
+ 
+    For n = parseInt(x):
+        emit mov rcx, [rbp - x_offset]        ; first argument
+        emit call parseInt$listen
+        emit test rdx, rdx
+        emit jnz error_dispatch_label
+        emit mov [rbp - n_offset], rax
+ 
+    For print(n + 1):
+        emit mov rax, [rbp - n_offset]
+        emit add rax, 1                        ; literal 1 patched as immediate into add
+        emit mov rcx, rax                      ; first argument to print
+        emit call print                        ; non-fallible, plain call
+        ; print's return value is void; nothing to read from rax
+ 
+    emit jmp end_block_label                   ; success-path exit, skip dispatch and clauses
+ 
+    Dispatch sequence:
+        record error_dispatch_label's emit-offset
+        emit mov rax, [rdx]                    ; load error tag word from callee's stack
+        emit cmp rax, IoError_tag
+        emit je IoError_clause_label
+        emit cmp rax, ParseError_tag
+        emit je ParseError_clause_label
+        emit jmp end_block_label               ; unmatched: error kind not in any clause
+ 
+    IoError on-error clause body:
+        record IoError_clause_label's emit-offset
+        emit copy of IoError fields from [rdx + offset] into the it-binding stack slot
+        emit blocks for LogIoError(it) call
+        emit jmp end_block_label
+ 
+    ParseError on-error clause body:
+        record ParseError_clause_label's emit-offset
+        emit copy of ParseError fields from [rdx + offset] into the it-binding stack slot
+        emit blocks for LogParseError(it) call
+        emit jmp end_block_label
+ 
+    record end_block_label's emit-offset; patch all forward jumps
+ 
+    Function epilogue: standard epilogue. Since this is the discarding flavor of the
+    enclosing function, no RDX management is emitted; success path just rets.
+ 
+Emitter. Walks the parse tree once more, copies the bytes from each node's selected code
+blocks into the Xmo's codeBuffer, accumulates relocation entries for the SymbolKey
+references (readConfig$listen, parseInt$listen, print, LogIoError, LogParseError), and
+back-patches the function prologue's stack-allocation immediate to the totalStackSize the
+Reviewer computed.
+ 
+Generated code summary (annotated with overhead):
+ 
+    Standard prologue                       (would be present for any function)
+    call readConfig$listen                  (just the call)
+    test rdx, rdx; jnz error_dispatch_label (2 instructions: listening overhead)
+    mov to stack slot                       (stores result)
+    mov from stack to rcx                   (parseInt argument)
+    call parseInt$listen                    (just the call)
+    test rdx, rdx; jnz error_dispatch_label (2 instructions: listening overhead)
+    mov to stack slot                       (stores result)
+    mov from stack, add immediate, mov      (computation, no overhead beyond what the
+                                             source asked for)
+    call print                              (just the call - non-fallible)
+    jmp end_block_label                     (skip dispatch and clauses)
+    Dispatch and on-error clause bodies     (only executed on error)
+    Standard epilogue                       (would be present for any function)
+ 
+The total per-listening-call overhead is two instructions: test + jnz. The error-data copy
+in clause bodies is paid only on the error path. The print call costs nothing beyond the
+call itself, since it's non-fallible. The literal 1 is folded into the add instruction's
+immediate, costing zero extra instructions.
+ 
+This is the framework working as designed: the listening machinery costs two instructions
+per listening call site, non-listening calls cost nothing, literals fold into their parent
+instructions where possible, and the trap dispatch is paid only on actual failures.
+
+
+7. RUNTIME SERVICES
+===================
+
+Decisions remaining to be finalized:
+
+Null contagion strategy 
+Fire-once-accessor for once-init (strategy to be drafted)
+Threading runtime / thread pool detail (committed to "kernel32 + custom scheduler + thread pool" in #13, but the scheduler shape is unwritten).
+Arena implementation parameters (element size, alignment, packing, optimization knobs) — discussed but not pinned.
+[I hope to to both forms, arena myArena would be heterogenous, arena<thistype> myArena would be homogenous.]
+Whether arenas are homogenous-only in v1 vs heterogenous. 
+Heap-vs-arena destructor model details beyond the unwind-driven model. 
+[heaps and arenas simply release all their memory back to the system heap all at once they are destroyed. 
+ When declared, they are added to the bottom of the unwind stack for their scope, all other things are added to the top, so they will be the last things to be destroyed.]
+
+
+8. PER-BUILT-IN CHAPTERS
+========================
+
+This section walks through how each built-in type populates the four-table model
+from §4 and which §6 cross-cutting machinery it relies on. Each chapter speaks in
+terms of the data structures and machine-code sequences that realize the type at
+each interesting refinement profile, the rmask bits that have codegen consequences
+for that type and those that are vacuous on it, and the conversions that move
+values into and out of the type.
+
+Chapters are organized per-family rather than per-type wherever the types within
+a family share their codegen story modulo a few parameters. The integer family
+covers i8, i16, i32, i64, u8, u16, u32, and u64 in one chapter — they share the
+same skeletons for arithmetic, comparison, bitwise operations, and assignment;
+they differ in operand width and, for a handful of operations, in signedness.
+Where width and signedness alter the chosen Table D refinement-block vector
+without altering the skeleton, the chapter notes those choices inline. The float
+family (f32, f64), character family (c8, c16), and string family follow the same
+pattern.
+
+Each chapter follows this template:
+
+  - the family's scope and the natural-default refinement profile (the rmask
+    the Morpher converges on for a value used in the typical way)
+  - the operations Table A holds entries for, with one walked-through skeleton
+    to anchor the format
+  - how width, signedness, or other intra-family parameters select among
+    Table D vectors within a single skeleton
+  - override entries by rmask bit — which bits have meaningful coverage entries
+    in Table B for this type, what the override does, and the joint-coverage
+    entries for bit combinations whose joint codegen differs from the bit-by-
+    bit overlay
+  - rmask bits that are vacuous on this type, bits whose handling is deferred
+    to a future revision, and combinations explicitly rejected
+  - conversions into and out of the type, listed as (target, source) pairs
+    that slot into the type's Table A entries the same way arithmetic does
+  - is-checks, which use the §6.6 fixed-tag-check or class-hierarchy skeleton
+    without type-specific work in nearly every case
+  - the type's interaction with §6.7 literal patching, when the type has
+    literals
+  - the type's interaction with the carry/overflow flags or other thread-locals
+    where relevant
+  - any function-call ABI specifics beyond the standard register/stack
+    assignment
+
+The chapters lean on §6's machinery rather than restating it. Where a chapter
+says "the conversion node inserted by the Reviewer," see §6.1.1; where it says
+"the literal patches into the immediate slot," see §6.7; where it says "the
+variant tag is checked at the parent expression," see §6.6 and §6.5. The
+chapters lean on §4 for table mechanics — what Table A holds, how Table B's
+cost-sorted superset rule picks coverage entries, how Table C maps placeholder
+positions to Table D vectors — without restating those either.
+
+The user-facing built-in vocabulary in XMC §5a includes a few qualifiers that
+act as shorthand for specific rmask states. 'atomic' on a simple type is the
+same compiler state as 'concurrent' on that type via the serial/concurrent bit,
+named differently because 'atomic' reads more naturally for primitives where
+lockless implementation is the norm; the chapter below treats 'atomic i32' and
+the concurrent override of an i32 as one and the same.
+
+8.1 INTEGER FAMILY: i8/i16/i32/i64, u8/u16/u32/u64
+--------------------------------------------------
+
+Family scope. Eight types: i8 (1 byte signed), i16 (2 bytes signed), i32 (4
+bytes signed), i64 (8 bytes signed), and the corresponding u8/u16/u32/u64
+unsigned. All eight share Table A skeletons; they differ in operand width and,
+for a handful of operations, in signedness. Width and signedness are parameters
+that select among the Table D refinement-block vectors keyed off the (baseType,
+operation) lookup — not separate skeletons.
+
+Natural-default profile. Of the eight rmask bits, the integer family has
+codegen consequences for four (materialized/virtual, raw/arc, serial/concurrent,
+and the variant join at the parent — discussed below), and four are vacuous or
+deferred (fixed/resizable, homogenous/heterogenous, rigid/fluid, and mutable/
+immutable, this last for the reason described next). The Morpher's natural-
+default convergence for an integer used in ordinary arithmetic is the i32
+skeleton baseline §4 names: singular, materialized, fixed, homogenous, serial,
+mutable, raw, rigid. The value lives directly in a register or stack slot;
+there is no atomic prefix, no refcount header, no pointer indirection. The
+skeletons in this chapter are calibrated to this profile, and overrides are
+paid only when bits depart from it.
+
+Mutable/immutable is vacuous at codegen time for this family. Reads and
+arithmetic produce identical instructions whether the source value is mutable
+or immutable, and writes to immutable targets are rejected at the Reviewer
+before any block selection happens. There are accordingly no Table B coverage
+entries for immutable on the integer family's read-side ops, and no Table A
+entries for write-side ops on immutable targets. Immutable scalars participate
+in compile-time literal folding through §6.7's mechanism, which operates on
+the expression tree before block selection and so is independent of the rmask
+override machinery.
+
+The three meaningful bits and what their overrides do:
+
+    virtual  — value lives at *p rather than directly. Loads and stores go
+               through the pointer. Override Table D vectors replace the direct
+               load/store blocks with indirected versions; the indirection
+               itself is the cost paid.
+
+    arc      — only meaningful when virtual. Reference-counted heap allocation;
+               the override adjusts allocation, copy, and destruction codegen
+               to update the arc header's count. A joint-coverage entry covers
+               (virtual + arc) with the cost-sorted Table B mechanism of §4.
+
+    concurrent — atomic operations. Override Table D vectors replace the plain
+               mov/add/etc. instructions with their LOCK-prefixed x86 forms.
+               Most integer operations have a lock-prefixed form directly
+               (xadd, cmpxchg, locked add, locked and, etc.), so concurrent
+               stays lockless on this family. The user-facing keyword 'atomic'
+               produces the same compiler state.
+
+The four vacuous or deferred bits:
+
+    fixed/resizable        — vacuous. Nothing to add to or remove from a
+                             single integer.
+    homogenous/heterogenous — vacuous. A scalar has no elements.
+    rigid/fluid            — deferred. A fluid integer would carry an
+                             attribute table for runtime-added members, which
+                             requires storage beyond the scalar itself; a
+                             fluid integer must therefore also be virtual
+                             (raw or arc). Codegen for fluid scalars is not
+                             currently implemented; if added, it would slot in
+                             as a joint-coverage entry over (virtual + fluid).
+                             The materialized + fluid combination is rejected.
+    singular/variant       — applies at the receiving symbol's level, not at
+                             the integer itself. A 'var x = 5; x = "hi";'
+                             sequence produces a variant<i32, zs8> at x's
+                             symbol; the i32 operations on x's i32-tagged
+                             values use the same Table A entries as a non-
+                             variant i32. The variant-tag check is the §6.6
+                             skeleton on the parent expression, not part of
+                             the integer chapter.
+
+Operations covered. Table A holds an entry for each of:
+
+    arithmetic        — + - * / % (and unary - on signed types)
+    bitwise           — & | ^ ~ << >>
+    comparison        — == != < <= > >=
+    assignment        — = (copy) and := (reference assign, which morphs to
+                        virtual)
+    compound          — += -= *= /= %= &= |= ^= <<= >>=
+    pre/post inc/dec  — ++x, x++, --x, x--
+    conversion        — one entry per (target_type) for each integer width
+                        plus floats and the character types
+
+A walked-through skeleton: i32 +. The operation node has two operand children,
+each of which has been assigned a parameter id by the Reviewer (register,
+stack slot, or immediate). The natural-default skeleton encodes the 32-bit add
+of two register-resident values producing the result in a register:
+
+    mov   <result_reg>, <left_operand>      ; placeholder slot
+    add   <result_reg>, <right_operand>     ; placeholder slot
+
+Two placeholder positions, one per operand source. The Reviewer's parameter
+list tells the Coder what each operand is — 'left is in RCX', 'right is in
+[rbp - 8]', 'right is the immediate 1' — and the Coder splices the
+corresponding load-or-immediate block into each placeholder via §6.1's
+parameter-fill mechanism (Tables E and F). When the right-hand operand is an
+immediate, no separate load instruction is emitted; the immediate folds into
+the add's encoding directly per §6.7.
+
+Width and signedness as Table D parameters. The same skeleton serves all
+eight integer types. Width selects the operand-size prefix and the immediate
+encoding:
+
+    i8 / u8     — 8-bit register low byte; no prefix, often a separate opcode
+    i16 / u16   — 0x66 operand-size prefix
+    i32 / u32   — no prefix (32-bit is x86-64 default)
+    i64 / u64   — REX.W prefix
+
+Signedness affects only the operations whose semantics depend on sign:
+
+    division/remainder        — idiv (signed) vs div (unsigned); two
+                                different blocks
+    comparison                — the conditional jump after cmp uses signed
+                                jcc (jl, jge, etc.) for signed types,
+                                unsigned jcc (jb, jae, etc.) for unsigned
+    sign-extending conversion — movsx for signed source, movzx for unsigned
+
+For these operations the (baseType, operation) Table A entry is shared across
+the family, but the Table D block selected for the placeholder differs by
+signedness. Bitwise ops, addition, subtraction, and multiplication produce
+identical bytes for signed and unsigned operands of the same width — two's
+complement makes them the same instruction.
+
+Conversions. A conversion from one numeric type to another is a node the
+Reviewer inserted per §6.1.1. Each is a separate Table A entry indexed by
+(target_type, source_type). The interesting cases:
+
+    widening signed   — movsx fills the upper bits with the source's sign bit
+    widening unsigned — movzx zero-fills (or, for 32-to-64, the implicit
+                        zero-extension of writing a 32-bit register suffices)
+    narrowing         — plain mov of the lower bits; the high bits are
+                        discarded with no overflow check unless the source
+                        uses __overflow in the same scope, in which case the
+                        Reviewer chose the flag-capturing block (see below)
+    integer to float  — cvtsi2ss for f32, cvtsi2sd for f64; signed input
+                        only, so unsigned-source conversions widen first to
+                        a larger signed type
+    float to integer  — cvttss2si or cvttsd2si (truncate-toward-zero), with
+                        narrowing post-conversion if the target is smaller
+                        than 32 bits
+    integer to char   — c8 is structurally a byte; c16 is two bytes. The
+                        conversion is a width-adjusted copy
+
+is-checks. An 'x is i32' check on a variant-tagged x reduces to the §6.6
+fixed-tag-check skeleton: load the tag word from x's variant slot, compare
+against i32's tag id, set a boolean. Nothing in the integer chapter adds to
+this — the type identity is just a number out of the Morpher's type table.
+
+Literal patching. An integer literal as an operand to another integer op
+folds into the immediate slot of that op's encoding via §6.7. The literal
+node carries its bytes in the target type's encoding, the parent op's chosen
+Table D block exposes its imm-slot offset in patchOffset, and the Emitter
+writes the bytes at that offset when it walks the literal's parent. Each
+width has its own immediate encoding; large i64 literals that exceed the
+imm32 range select the mov-imm64 form (movabs) rather than fold into a
+smaller-immediate-only op like add.
+
+Carry and overflow. The +, -, *, division, and shift operations on integer
+types can set __carry and __overflow per XMC §5d. The codegen path is
+selective: if the Reviewer determined that __carry or __overflow is read in
+the same scope as the operation, the Table D block chosen for the arithmetic
+op includes the flag-capture instruction (a setc or seto into the appropriate
+thread-local slot) immediately after the arithmetic; otherwise the bare
+arithmetic block is used and the flags die naturally with the next
+instruction. The decision is made per-call-site during the Reviewer's
+parameter-fill pass, not as a global compile flag, so the cost is paid only
+where the source asked for it.
+
+Function-call ABI. Integers are passed in registers per the platform ABI —
+RCX, RDX, R8, R9 on Windows for the first four, with smaller widths zero- or
+sign-extended into the full 64-bit register depending on signedness; further
+arguments go on the stack. Returns come back in RAX with the same width-
+extension rules. The Reviewer's parameter-id assignment handles the register-
+vs-stack decisions; the integer chapter does not add anything here beyond the
+width-encoding choice.
+
+Rejected combinations.
+
+    materialized + fluid — rejected. A fluid scalar needs storage for its
+                           attribute table, which the materialized
+                           representation does not provide.
+    immutable + write    — rejected at the Reviewer; no codegen entry exists.
+
+Combinations not listed are accepted; their codegen is the appropriate joint-
+coverage entry in Table B sorted by cost.
+
+
+
+WHAT'S NEXT
+===========
+    
+Workflow change: per-piece end-to-end chats aimed at implementation and testing.
+
+Here are our current ambitions:
+
+05/31/2026  - feature complete and tested for the initial version of the language
+08/31/2026  - game engine complete and tested sufficient for the development of Zone Assault
+12/25/2026  - initial version of Zone Assault complete and tested
+
+-----------
+
+Source tree so far:
+
+builder/
+    linker.h
+    linker.cpp
+compiler/
+    Arena.h
+    Lexer.cpp
+    Lexer.h
+    Parser.cpp
+    Parser.h
+    Morpher.cpp
+    Mopher.h
+    SymbolTable.h
+    Types.h
+    Xmo.cpp
+    Xmo.h
+pch/
+    pch.cpp
+    pch.h
+    stl.h
+    win32.h
+old/
+    data/
+        AltCopdeBlocks.h
+        CodeBlock.h
+        EmmitterData.h
+        GlobalData.h
+        MemoryData.h
+        ParserData.h
+        PrimaryCodeBlocks.h
+        ProjectFileData.h
+        SourceFileData.h
+        XmoData.h
+    process/
+        SourceLoader.cpp
+        SourceLoader.h
+
+        {.. code and header files with everything in the process namespace..}
+        old/
+            {.. even older files ..}                    
+    experiments.cpp         // old bottom-up approach with process and data, started with a manually generated .obj that linked and executed, resulted in current form Coff.cpp..h
+                            // got as far as up as parse nodes with code blocks, demonstrated calling functions, calling library functions from a C++ lib I wrote, calling kernel32.. 
+    experiments.h   
+tool/
+    BS_thread_pool.hpp
+    Coff.cpp
+    Coff.h
+    FileMapping.cpp
+    FileMapping.h
+    Logger.cpp
+    Logger.h
+    StringFunctions.cpp
+    StringFunction.h
+    TextParser.h
+Builder.cpp
+Builder.h
+CommandLineReader.cpp
+CommandLineReader.h
+Compiler.cpp
+Compiler.h
+main.cpp
+ProjectFileReader.cpp
+ProjectFileReader.h
+Tester.cpp
+Tester.h
+
+    

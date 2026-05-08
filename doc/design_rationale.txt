@@ -37,9 +37,9 @@ another — but each has won out enough times to deserve naming.
     generator/consumer merging) are the compiler's responsibility. Decisions that depend on programmer intent (whether to pin a type, whether to materialize a handle, 
     whether to handle an error) are the programmer's responsibility, expressed through syntax. The compiler does not try to guess intent.
 
-4.  Same syntax, same meaning. If two constructs use the same operator or keyword, they should mean the same thing structurally. The colon ":" means "scope qualification"
-    everywhere it appears (file scope, namespace, class, label, inheritance). The dot "." means "member access on a value." A reach is a reach whether the source is a
-    labeled block, a nested if, or a shadow scope.
+4.  Same syntax, same meaning. If two constructs use the same operator or keyword, they should mean the same thing structurally. The colon ":" always operates on a
+    scope or a name being introduced, never on a value (file scope, namespace, class, label, inheritance, declaration binding, vault placement). The dot "." always
+    operates on a value. A reach is a reach whether the source is a labeled block, a nested if, or a shadow scope.
 
 5.  Provide control where performance matters. xmc is meant to compete with C on hot paths. Where a default behavior costs measurable runtime work, the language must
     provide a way for the programmer to opt out. Where a design choice closes off a performance technique entirely, the choice should be reconsidered. (We have not yet 
@@ -100,8 +100,8 @@ the zeroing for performance and risk reading garbage stack.
 xmc's answer: the Morpher determines which locals are *reached* from an enclosing scope and *not provably written* on every path. Only those
 locals get zeroed at function entry. Everything else is uninitialized stack memory. Functions that don't use reach pay no initialization cost.
 
-Reason: the safety guarantee in §13 ("reach reads null on skipped path") needs zeroing to be sound. Zeroing every local for the sake of every
-function would be safety the programmer didn't ask for. Zeroing only the locals that need it for §13 to hold preserves the guarantee without 
+Reason: the safety guarantee in §14 ("reach reads null on skipped path") needs zeroing to be sound. Zeroing every local for the sake of every
+function would be safety the programmer didn't ask for. Zeroing only the locals that need it for §14 to hold preserves the guarantee without 
 imposing unrequested cost.
 
 For variables that should be initialized regardless, the programmer writes "var x = 0;" or "i32 a[5] = { 0 };" explicitly.
@@ -199,7 +199,7 @@ Errors and generator-exhaustion are structurally the same: a function returns, b
 xmc treats both as "control-flow variants" and routes them through three handling sites: error blocks "{? ?}", the pipe operator "|", and loop-binding forms 
 "while (var x = expr)".
 
-A control-flow variant outside any handling site behaves like an ordinary variant — noop contagion (§25, generic code) absorbs unhandled cases without exception-style 
+A control-flow variant outside any handling site behaves like an ordinary variant — noop contagion (§27, generic code) absorbs unhandled cases without exception-style 
 unwinding.
 
 Reason: errors as exceptions create a hidden control-flow channel that every function participates in, increasing reasoning cost. Errors as data flowing through return 
@@ -220,18 +220,29 @@ Labeled reach is the explicit opt-in for "give me the live state of this scope, 
 but a labeled reach specifically includes shadow scopes that are directly within the labeled scope.
 
 
-11. The colon is uniformly the scope-qualification operator
------------------------------------------------------------
+11. The colon marks scope-mediated relationships; the dot marks value-mediated ones
+------------------------------------------------------------------------------------
 
-"filename:foo" reaches into a file scope. 
-"namespace:foo" reaches into a namespace. 
-"MyClass:foo" reaches into a class scope. 
-"label:foo" reaches into a labeled block.
-"Type x = ..." followed by ":Base" qualifies a base class in inheritance. 
-"name : type" separates name from type in declarations.
+The dot's left side is always a value: "instance.member", "struct.field", "pointer.member" (auto-deref). The right side names something inside that value.
 
-The same operator, the same meaning everywhere: "look up the right-hand identifier in the scope named by the left-hand identifier." Several related dot-vs-colon 
-decisions follow from this principle.
+The colon's left side is always a scope or a name. What appears on the right depends on the context:
+
+"filename:foo"          — lookup: foo in file scope
+"namespace:foo"         — lookup: foo in namespace
+"MyClass:foo"           — lookup: foo in class scope (static member, type-side method)
+"EnumName:Value"        — lookup: a named value in an enum's scope
+"label:foo"             — lookup: foo in a labeled block
+"class Derived : Base"  — relationship: declares Derived's base scope
+"name : type"           — binding: associates a name with a type in a declaration
+"vault: x:vaultname"    — placement: places x in the named vault
+
+Earlier drafts framed this as "the colon is uniformly the lookup operator." That overstated the rule — inheritance, declaration binding, and vault placement all use the colon
+without performing a lookup. The honest framing is the one above: the colon signals that the left side is a scope (or a name being introduced), and the dot signals that the
+left side is a value. The specific meaning of the colon depends on context, but it never operates on a value.
+
+This still does the work the original rule was trying to do. The morpher uses dot-vs-colon to decide whether the left side must resolve to a runtime value or to a compile-time
+scope. Readers use it to see, at a glance, whether an access goes through a value or directly into a named scope. Allowing dot for class-static access ("Class.staticMember")
+would blur both signals — that case stays rejected, per Key Decision #7.
 
 
 12. xmc has no LLVM
@@ -250,116 +261,86 @@ conservative (don't try to prove definite-assignment; just zero everything that 
 [edit: No, let's be conservative by only zero-ing things where it is easy to determine that they need it.]
 
 
+13. kernel32 only — no C runtime
+--------------------------------
+
+The xmc runtime calls kernel32 (and the small set of related Windows system DLLs — ntdll, ws2_32, user32 where the language needs them) directly. No 
+linking against the C runtime, no msvcrt, no ucrtbase. xmc programs ship without a CRT dependency.
+
+Reason: the C runtime is large, slow to load, and adds startup cost xmc programs don't ask for. It also imposes its own opinions — its own malloc, its 
+own thread-local-storage layout, its own once-init machinery — that xmc would have to either fight or live with. Dropping the CRT means xmc owns these 
+pieces directly and can make them fit the language's other commitments (the natural-default refinement profile, the merger's expectations, the 
+arc/raw/vault model, the Reviewer's frame layout).
+
+Specific consequences this commits us to:
+
+  - The system heap is HeapAlloc/HeapFree against the process default heap (or a private heap we create at startup). This is what xmc means by "the
+    system heap" when a declaration omits a vault.
+
+  - Threading uses CreateThread directly. The xmc runtime owns its own thread pool; spawn lowers to a task enqueue against this pool, not to a
+    CreateThread per spawn.
+
+  - Thread-local storage uses the OS TLS slot mechanism (TlsAlloc/TlsGetValue) for the small number of TLS entries the runtime needs (current vault, 
+    error-flag slots, scheduler-local state). Per-function thread-local declarations from xmc source code allocate space within a runtime-managed
+    TLS arena rather than each grabbing an OS TLS slot.
+
+  - String formatting, file I/O, time, math intrinsics — anything the user might assume "comes from the standard library" — is implemented in xmc 
+    standard-library code that itself calls kernel32 (CreateFile, ReadFile, GetSystemTime, etc.). No printf, no fopen, no strtol underneath.
+
+  - Once-init for static members and once data members uses the xmc-defined fire-once-on-accessor pattern (key decision pending its own write-up), not
+    the CRT's _Init_thread_header machinery.
+
+Cost: we own more code. We have to write a heap allocator that wraps HeapAlloc with our own bookkeeping where needed, a scheduler, a TLS arena, a
+formatting library, and so on. We accept this cost because each piece can be tuned to the language's specific needs in ways a general-purpose CRT
+cannot.
+
+Portability: this decision is Windows-first. A Linux port would have an analogous "syscalls plus a small runtime, no glibc" stance — we'd call into 
+the kernel directly via the syscall interface and own the same pieces. The principle ports; the specific calls do not.
+
+#14 Performance ambition
+------------------------
+
+C/C++ performance or close, plus rapid prototyping ergonomics, plus compile speed faster than LLVM-based toolchains. We pick implementation strategies 
+that serve all three. Innovation welcome where it pays back; no thesis-grade cleverness. The whole point of XMC: prototype like Python, optimize hot 
+paths to C speed, in one language. Game engine and game in the same codebase, game code is high level and rapid to implement for most paths but can 
+lower to C/C++ style with relative ease to add fast features to the engine.
+
+#15 Destruction is a stack-unwinding event
+__________________________________________
+
+Destructors fire on scope exit, in reverse-construction order. Each destructor calls dealloc against whatever vault its value lives in (or system heap, 
+or noop for stack). Vaults don't initiate destruction and don't walk their contents at teardown. Arena dealloc is a noop. Static / namespace-global / once-init 
+values register on a global destruction stack at first-access; main unwinds it at exit. The "vault scope same-or-containing" rule is what makes this sound — 
+element scopes always exit before their vault's scope does. (Vaults declarations are added to the bottom of their scope unwind stacks, everything else is
+added to the top.)
+
+
+
 PENDING DESIGN QUESTIONS
 ========================
 
 These are decisions made informally during design conversations but not yet pinned down in the language document, or aspects of decisions where
 the rule was settled but corner cases remain.
 
- 1. Concurrency interaction with "is" narrowing. When the outer variable is concurrent, another thread could in principle morph the variant after an "is" 
-    check fired but before the narrowing-dependent code finishes. This is a real race. xmc has no detailed concurrency story yet (§20 is a stub of sorts); the
-    narrowing rule itself is correct under any concurrency story, but the guarantees about narrowing remaining valid depend on the concurrency primitives.
-    
-[edit: There is no "race" per se? Morphing doesn't happen at run time? The "is" check simply tells us which tagged member is in play at run time.
-The refinement masks of a variant, including singular vs concurrent, apply to the variant and its members. If a variant is concurrent, its tag is atomic,
-and if its members can be atomic they are, otherwise they're guarded.] 
-
- 2. Calling convention for materialized generator handles. "Generator<T>" carries a function pointer to a boxed ".next()". The exact ABI for that boxed call 
-    has not been specified. Worth pinning down before the Coder is implemented for §18.
+ 1. Calling convention for materialized generator handles. "Generator<T>" carries a function pointer to a boxed ".next()". The exact ABI for that boxed call
+    has not been specified. Worth pinning down before the Coder is implemented for §19.
 
 [edit: Well, .next() is a function call that takes no parameters and returns a value of type T. I'm not sure what more we can say about it?]
 
- 3. Switch and case construct. Sketched in the Miscellaneous Notes in Appendix B. 
-    
-    Open questions: 
-        - exhaustiveness checking against variant tag sets, 
-        - fall-through behavior (default: no), 
-        - whether "switch" can yield a value, 
-        - binding syntax for variant cases, 
-        - integration with "is". 
+ 2. Bit-flag composition was added to enums in §22g — values can be combined with |, &, ^, ~ with no special machinery. Worth eventually deciding whether
+    a separate "flagset" or "flags" qualifier is warranted (currently nothing in the design suggests it is).
 
-[edit: 
+ 3. The exhaustive-switch warning was considered for §22 (enums) and rejected as hand-holding. The same question may come up again for variant-tag switches —
+    if "switch (typeof(v))" doesn't cover every type in the variant, should the morpher warn? Current answer: no, on the same grounds. A switch that doesn't
+    match noops, which is normal xmc behavior.
 
-re: Exhaustiveness checking: Are you talking about an is Finished check? See is checking below.
-
-Fall-through: I know a lot of programmers hate switch fall-through, they say it causes a lot of terrible bugs. I don't find that to be case, I find fall-through to be
-very useful. Maybe we can compromise - I want a way to specify that multiple cases map to the same code. But maybe we use commas:
-
-switch(n) {
-    1, 2, 3: DoThis();                      // Hmm, one statement-body per case list. No "break" needed. I like that. I think I'm going to edit Appendix B.
-    4, 5: { DoThat(); AndTheOther(); }      
-    *: IfAllElsFails();
-}
-
-re: is checking:
-
-switch(typeof(v)) {
-    Captain:    HandleUser(v);
-    Ship:       HandleShip(v);              // or any subclass... can we do that? How? Does typeof(thing) == BaseClass work if thing is DerivedClass? 
-    Shot:       HandleShot(v);                    
-}                                           // no default case specified - if v is something else, don't do anything.
-
-I have an idea: 
-
-    typeof(thing) == BaseClass              // true if thing is DerivedClass
-    typeof(thing) === BaseClass             // false if thing is DerivedClass. We might also want to do a few other things ===.
-
-
-switch(captainList.find(thisCaptain)) {
-    NotFoundError:  UI:ShowMessage(msgBenched);                     // possible variant value - do nothing
-    playersCaptain: UI:ShowMessage(msgYourUp);                      // another possible variant value
-    *:              UI:ShowMessage(GetIsUpMessage(thisCaptain));
-}
-
-What is the value of a NotFoundError? Can it be NotFoundError? So we could use "if (v == NotFoundError)" interchangebly with "if (v is NotFoundError)" because 
-in the first case, we're asking about the value/instance and in the second we're asking about the type/class? Not sure about that.
-
-But failing that, we could use an expression case:
-
-switch(captainList.find(thisCaptain)) {
-    typeof(it) == NotFoundError:    UI:ShowMessage(msgBenched);
-    ..
-}
-
-re: expressions as cases:
-
-switch(v) {
-    ConditionRed(v):    HandleRed(v);       // boolean expression cases involving the switch key are allowed, but the code costs more; simple types are preferred
-    ConditionBlue(v):   HandleBlue(v);
-}
-
-Can we allow declaration-assignments as switch keys? That would be nice, I would like to do that. Even though statements don't usually return values.
-
-switch(isUp = captainList.find(thisCaptain)) { .. use "isUp" instead of "it".. }
-
-]
-
- 4. Loops section content.
-
-    §10 is currently a stub. The forms (for, for-in, while, do-while) exist in the BNF; the section needs to write them up with the variant-routing rules for 
-    "while (var x = expr)" and the merger semantics for "for (x in expr)".
-   
-[Let's draft it.]
-
- 5. Arrays.
-
-    Mentioned in passing throughout the doc; never formally introduced. The "i32 a[5] = { 0 };" initializer syntax is implied but not specified. Worth a section.
-
-[Let's draft that one, too.]
-
- 6. Enums.
-   
-    Used in §5c ("TailStates:Wagging") but not formally defined. Likely a short section establishing the syntax and the enum-name-as-scope rule (so "EnumName:value" 
-    is consistent with the colon-uniformity rule).
-
-[Where should it go? Do we need to renumber again?]
-
- 7. Whether reach can address shadows declared in unlabeled-but-nested scopes inside a labeled scope.
-    Current rule: no. Reach addresses the immediate labeled scope's bindings, not the bindings of scopes inside it. 
-    A shadow in an unlabeled if-then-else inside a labeled block is not addressable through the labeled reach. 
-    To address it, label its scope too. This is internally consistent but worth confirming during §10/§11 drafting.
-
-[Yeah, I think if I want to address a shadow or a nest within a nest, I can label the scope I want to address. That just seems more clear to me.]
+[Resolved items moved out of this list:
+   - Concurrency interaction with "is" narrowing — see edit-note in earlier draft; morphing is compile-time, not a race.
+   - Switch and case construct — §12 is drafted.
+   - Loops section content — §11 is drafted.
+   - Arrays — §9 is drafted.
+   - Enums — §22 is drafted.
+   - Reach into shadows in unlabeled nested scopes — locked in: "label the scope you want to address."]
 
 
 HOW TO USE THIS DOCUMENT

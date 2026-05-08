@@ -106,7 +106,7 @@ EntryPoint  = hello:main        # <sourcefile>:<function> — names the entry po
 Subsystem   = console
 CRT         = static            # static | dynamic | static-debug | dynamic-debug
 SourceRoot  = src               # optional; default is current working directory
-Sources     = [*.xm]            # file list or glob patterns, space or semicolon separated
+Sources     = [*.xm]            # file list or glob patterns, space or semicolon separated. optional, default is [*.xm]
 LibPaths    = [C:/Windows/System32]
 StaticLibs  = [glfw3, openal]
 DynamicLibs = [kernel32, user32, opengl32]
@@ -203,25 +203,25 @@ The intent is for a programmer to be able to achieve C-like speed for hot paths,
 
 var is a way to declare and potentially initialize a variable that infers its type and allows refinement morphing.
 
-var v;                  - Not an error; v eventually takes on whatever type is assigned to it. And then it may morph after that. 
+var v;                  // Not an error; v eventually takes on whatever type is assigned to it. And then it may morph after that. 
 
 In most circumstances, the keyword "var" is the presumed default and can be skipped.
 
-v = 13.0;               - if "v" doesn't exist already, this is the declaration, and it's var.
+v = 13.0;               // if "v" doesn't exist already, this is the declaration, and it's var.
 
 The keyword "ref" declares a variable whose type and full refinement mask are inferred from its first assignment, then frozen — no further morphing in any dimension. 
 Where var sets the minrmask from inferred refinements but leaves maxrmask wide open, ref snapshots the rmask after first assignment and sets minrmask and maxrmask 
 both equal to that snapshot. This is the form to reach for when you want inference convenience without the risk of subsequent morphing — function references in particular
-always use ref (see §17a), but it's appropriate any time you want "whatever the compiler decided this is, lock it down."
+always use ref (see §18a), but it's appropriate any time you want "whatever the compiler decided this is, lock it down."
 
-ref u = CreateUser(id);     - u takes the type and refinements implied by CreateUser's return at this site, then is frozen.
-ref x = 5;                  - x is u8, will not morph to a larger numeric type.
+ref u = CreateUser(id);     // u takes the type and refinements implied by CreateUser's return at this site, then is frozen.
+ref x = 5;                  // x is u8, will not morph to a larger numeric type.
 
 An "ugly mask" can optionally be specified when declaring a variable, that constrains morphing. The bits are specified from left to write
 using the first letters of the words above from top to bottom, with the left side words corresponding to 0's in the bitmask, and right side words
 corresponding to 1's. The letter for "Heterogenous" is e, since h is used for it's opposite, "Homogenous."
 
-User~mrvaefcs u;        - the maximum refinement mask is all 1's here, except for the final one, Singular (non-Variant)
+User~mrvaefcs u;        // the maximum refinement mask is all 1's here, except for the final one, Singular (non-Variant)
 
 Attempts to assign a value of a different type to u are ignored. This "max refinement mask", of Singular, by the way, is the default for type-specified 
 variables. Assignments of a variant to a singular type narrow to the singular type, or if they cannot, a warning is produced and the assignment is ignored.
@@ -232,7 +232,7 @@ Variables and parameters have minimum and maximum refinement masks, referred to 
 The rmask bit qualifiers in the lists above can be used to eiter pull the maxrmask down, using a qualifier from the 0, left side list, or bump
 a minrmask up using a qualifier from the 1, right side list.
 
-raw p := User();        - raw pointer to a heap allocated constructed User struct or class, or to whatever is returned by the function named User.
+raw p := User();        // raw pointer to a heap allocated constructed User struct or class, or to whatever is returned by the function named User.
 
 That sets the raw/virtual bit of the maxrmask to 0, preventing p from morphing to arc.
 
@@ -240,43 +240,43 @@ b. Subtypes
 
 Some built in containers have subtypes with implied refinement mask bits. The queue, for example, has several lockless subtypes that are automatically concurrent:
 
-spsc_queue myQueue1;    - lockless single producer single consumer concurrent queue, minrmask has the concurrent bit set
+spsc_queue myQueue1;    // lockless single producer single consumer concurrent queue, minrmask has the concurrent bit set
 spmc_queue myQueue2;
 mpsc_queue myQueue3;
 mpmc_queue myQueue4;
 
 c. Variants
 
-var u = Employee:Retrieve(id);      - u is a variant<User, ErrorNotFound>
-u = 99;                             - now u is a variant<User, ErrorNotFound, u8>
-u.TailState = TailStates.Wagging;   - now u has an runtime added attribute of type enum TailStates
-u.message = "woof!";                - another attribute of type zs8
-User u = Employee:Retrieve(id);     - u is User, if ErrorNotFound was returned, u is null
+var u = Employee:Retrieve(id);      // u is a variant<User, ErrorNotFound>
+u = 99;                             // now u is a variant<User, ErrorNotFound, u8>
+u.TailState = TailStates:Wagging;   // now u has an runtime added attribute of type enum TailStates
+u.message = "woof!";                // another attribute of type zs8
+User u = Employee:Retrieve(id);     // u is User, if ErrorNotFound was returned, u is null
 
-if (u is User) {..}                 - built in is operator returns true if the tag typeid matches the supplied type
+if (u is User) {..}                 // built in is operator returns true if the tag typeid matches the supplied type
 
 d. Morphs And Conversions of Numeric Types
 
 When unrestricted, numeric types will upgrade in size (but not downgrade) and switch toward bigger floats (but not away from them).
 When restricted, numeric types will perform conversions.
 
-var n = 123;                        - n is a u8;
-n = 3.1415                          - oops, nope, it was an f16.
-n = 489029.28376                    - oh, actually it was an f64
-n = -39                             - still f64
+var n = 123;                        // n is a u8;
+n = 3.1415                          // oops, nope, it was an f16.
+n = 489029.28376                    // oh, actually it was an f64
+n = -39                             // still f64
 
-i8 i = 234;                         - this is a negative number. The i8 won't let it switch types or sizes.
-i := 13;                            - it's now a shared pointer to a heap allocated i8. numeric variables will morph refinements.
+i8 i = 234;                         // this is a negative number. The i8 won't let it switch types or sizes.
+i := 13;                            // it's now a shared pointer to a heap allocated i8. numeric variables will morph refinements.
 
-mat i8 j = 96;                      - materialized i8.
-j := 13;                            - error. Can't reference assign to a materialized variable.
+mat i8 j = 96;                      // materialized i8.
+j := 13;                            // error. Can't reference assign to a materialized variable.
 
 raw i8 k = 97; 
-var p := k;                         - p is also raw.   [Our symbols have an rmask, which is the minimum/current rmask.. I guess they also need a maxrmask]
+var p := k;                         // p is also raw.   [Our symbols have an rmask, which is the minimum/current rmask.. I guess they also need a maxrmask]
 
-arc q = k;                          - shared pointer q gets a heap allocated copy of k
+arc q = k;                          // shared pointer q gets a heap allocated copy of k
 
-d16 d = 19.90d                      - No floats are used for this initialization. 
+d16 d = 19.90d                      // No floats are used for this initialization. 
 
 For decimal initialization from a constant like this, the digits after the decimal are counted and the decimal is assigned 199/10.
 If a math operation overflows during compile time initialization, the fraction is converted to its minimal integer form and the operation is re-attempted.
@@ -292,21 +292,21 @@ xmc has two literal forms for composite values: list-style with square brackets,
 
 List literals use square brackets:
 
-var nums = [1, 2, 3];               // a fixed array of three i32, default rmask
-var names = ["Alice", "Bob"];       // a fixed array of two zs8
+var nums = [1, 2, 3];               // a list of three i32, default rmask (initially fixed)
+var names = ["Alice", "Bob"];       // a list of two zs8
 
-A list literal produces an immutable rigid singular array — fixed size, default refinements — until usage forces the morpher to push refinement bits up. Adding to the 
-array (.add(...)) morphs it to resizable; reference-assigning it across vault boundaries morphs it to arc; concurrent access morphs it to concurrent; and so on (§9 for
-vaults, §22 for the morphing rules in detail). The literal is the seed; the morpher decides what concrete representation the variable ends up with. 
+A list literal produces an immutable rigid singular list — fixed-size initially, default refinements — until usage forces the morpher to push refinement bits up. Adding to the 
+list (.add(...)) morphs it to resizable; reference-assigning it across vault boundaries morphs it to arc; concurrent access morphs it to concurrent; and so on (§10 for
+vaults, §24 for the morphing rules in detail). The literal is the seed; the morpher decides what concrete representation the variable ends up with. 
 
 Anonymous struct literals use curly braces, distinguished by .fieldname = value form:
 
 var p = { .x = 1, .y = 2 };
 var rec = { .name = "Alice", .age = 30, .active = true };
 
-A literal whose elements all use .field = value form produces an anonymous struct value (§21e) — a struct whose type was synthesized by the compiler with the named fields,
+A literal whose elements all use .field = value form produces an anonymous struct value (§23e) — a struct whose type was synthesized by the compiler with the named fields,
 in declaration order, with types inferred from the values. The variable's inferred type is this anonymous struct type with default rmasks. Mixing .field = value form with
-positional or key: value elements within the same literal is an error: a literal is one of array, dict, or anonymous struct, not a hybrid.
+positional or key: value elements within the same literal is an error: a literal is one of list, dict, or anonymous struct, not a hybrid.
 
 Dict literals use curly braces, distinguished by the presence of key: value pairs: var ages = { "alice": 30, "bob": 25 };
 
@@ -330,15 +330,15 @@ Disambiguation in inferred contexts. When the compiler infers the type from a cu
 
 All elements are .fieldname = value form → anonymous struct.
 All elements are key: value form (key is any expression) → dict.
-No elements have keyed form → array.
+No elements have keyed form → list.
 Mixed forms → error.
 var s = { .x = 1, .y = 2 };       // anonymous struct, no warning
 var d = { "a": 1, "b": 2 };       // dict, no warning
-var a = { 1, 2, 3 };              // array, no warning
+var a = { 1, 2, 3 };              // list, no warning
 var x = { .x = 1, "b": 2 };       // error: mixed forms
-var e = {};                       // empty dict (the empty array literal is [])
+var e = {};                       // empty dict (the empty list literal is [])
 
-Choosing between list and array literals. [ ... ] and { ... } (in inferred-array context) both produce array values, and both start with the same default rmask. 
+Choosing between bracket forms. [ ... ] and { ... } (in inferred-list context) both produce list values, and both start with the same default rmask. 
 The difference is intent: [ ... ] reads as "I have a sequence of values"; { ... } reads as "I am initializing storage." Use whichever matches your intent — the compiler 
 does the same thing with both.
 
@@ -347,51 +347,51 @@ does the same thing with both.
 
 Each built-in type has a null value.
 
-var n = null;                   - the compiler has no idea what this is yet. Defer judgement.
-if (n) DoSomething();           - n has no type yet. More deferring. 
-n = true;                       - n is now a b8, so the above null becomes false, and the if statement can be coded (with a vector of machine code block ids)
-if (n) DoSomething();           - coded without any deferral.
+var n = null;                   // the compiler has no idea what this is yet. Defer judgement.
+if (n) DoSomething();           // n has no type yet. More deferring. 
+n = true;                       // n is now a b, so the above null becomes false, and the if statement can be coded (with a vector of machine code block ids)
+if (n) DoSomething();           // coded without any deferral.
 
 null is mapped to a value for each simple type. 
-For materialize (non-pointer) structs and classes, assignment to null causes them to become fluid, and get a b8 attribute, __assigned, which is set to false.
+For materialize (non-pointer) structs and classes, assignment to null causes them to become fluid, and get a b attribute, __assigned, which is set to false.
 For pointers, assignment to null sets them to 0.
 
-User u = null;                  - a reference to a default constructed optional User instance that is flagged as unassigned.
+User u = null;                  // a reference to a default constructed optional User instance that is flagged as unassigned.
 
-u.SetName("Kristy")             - ignored at run time, because of the "unassigned" flag. Source of bugs, yes. Maybe static analysis could warn about it.
+u.SetName("Kristy")             // ignored at run time, because of the "unassigned" flag. Source of bugs, yes. Maybe static analysis could warn about it.
 
 
 
 Resolving inference conflicts:
 
-var okidokey = null;        - deferred because of the var, and null's type is ambiguous. Deferreds that are never resolved become noops.
+var okidokey = null;        // deferred because of the var, and null's type is ambiguous. Deferreds that are never resolved become noops.
 
-User u;                     - Temporary. On the stack. Maybe not terribly useful in this case, but legal.
+User u;                     // Temporary. On the stack. Maybe not terribly useful in this case, but legal.
 
-u.SetName(okidokey)         - okidokey becomes an zs8 (at compile time). So the above code assigns an empty string, and this passes an empty string to SetName. 
-                              if okidokey is reference assigned in SetName, it becomes a virtual/arc - a shared pointer. 
+u.SetName(okidokey)         // okidokey becomes an zs8 (at compile time). So the above code assigns an empty string, and this passes an empty string to SetName. 
+                            // if okidokey is reference assigned in SetName, it becomes a virtual/arc - a shared pointer. 
 
-okidokey = "Sam";           - "Sam" is copied into okidokey; if okidokey is materialized, this won't affect things in SetName. 
-                              If it's virutal, things in SetName may be affected.
+okidokey = "Sam";           // "Sam" is copied into okidokey; if okidokey is materialized, this won't affect things in SetName. 
+                            // If it's virutal, things in SetName may be affected.
 
-okidokey = 99;              - okidokey becomes a variant with zs8 and u8 components. 
-                              the zs8 component is still null, and that is the component that is passed to u.SetName above.
+okidokey = 99;              // okidokey becomes a variant with zs8 and u8 components. 
+                            // the zs8 component is still null, and that is the component that is passed to u.SetName above.
 
-okidokey = 1023985472       - inferred simple types will morph to larger versions. The u8 component becomes a u32. It won't morph back down.
-                              specifically declared simple types won't morph to larger versions.
+okidokey = 1023985472;      // inferred simple types will morph to larger versions. The u8 component becomes a u32. It won't morph back down.
+                            // specifically declared simple types won't morph to larger versions.
 
-okidokey = MyObj:Create()   - This static factory returns an instance of MyObj. Reference? or copy? depends on optimization.
-                              But okidokey's tagged union ends up with a materialized instance of a MyObj. (Copy assignment.) 
+okidokey = MyObj:Create();  // This static factory returns an instance of MyObj. Reference? or copy? depends on optimization.
+                            // But okidokey's tagged union ends up with a materialized instance of a MyObj. Copy assignment. 
 
-okidokey := MyObj:Create()  - The MyObj in okidokey becomes a shared pointer (or a raw pointer if there is an arena in common) instead of a materialized instance. 
-                              When these statements are executed at run time, the assignment above will copy the value into an allocated space pointed at by the shared pointer.
+okidokey := MyObj:Create(); // The MyObj in okidokey becomes a shared pointer (or a raw pointer if there is an arena in common) instead of a materialized instance. 
+                            // When these statements are executed at run time, the assignment above will copy the value into an allocated space pointed at by the shared pointer.
                               
-other.Set(okidokey)         - If Set takes a specific type that is not in okidokey's union, this passes a null value of that type into the function.
-                              If Set takes a var, any operators used in Set may morph their lvalues.
+other.Set(okidokey);        // if Set takes a specific type that is not in okidokey's union, this passes a null value of that type into the function.
+                            // If Set takes a var, any operators used in Set may morph their lvalues.
 
-onemore := okidokey         - if onemore is a var, it becomes a shared pointer to a tagged union, and okidokey becomes a shared pointer if it wasn't already. 
-                              If onemore is a specific type that isn't in okidokey's tagged union, its value becomes null and okidokey is unaltered: 
-                              Assignment (and other operators) don't morph the right side except to make them into shared pointers when called for.                
+onemore := okidokey         // if onemore is a var, it becomes a shared pointer to a tagged union, and okidokey becomes a shared pointer if it wasn't already. 
+                            // If onemore is a specific type that isn't in okidokey's tagged union, its value becomes null and okidokey is unaltered: 
+                            // Assignment (and other operators) don't morph the right side except to make them into shared pointers when called for.                
 
 
 Passing things into functions may morph things inside those functions, but it does not morph what you're passing into it unless it has not yet been assigned a type.
@@ -403,23 +403,23 @@ Copy assignments of arena managed objects into same-arena-managed raw pointers s
 Simple types may change size, as mentioned:
 
 c8 c = 'a';
-zs16 s = c;                 - s remains an zs16, and it now contains a single c16 whose value is 'a'.
-c = s;                      - c will not switch its base type or become variant because it was declared with a specific type. 
-                              c gets the least significant byte of the first character in s. 
-                              This potentially loses data and will emit a warning.
+zs16 s = c;                 // s remains an zs16, and it now contains a single c16 whose value is 'a'.
+c = s;                      // c will not switch its base type or become variant because it was declared with a specific type. 
+                            // c gets the least significant byte of the first character in s. 
+                            // This potentially loses data and will emit a warning.
 
-var z := "stack zs8"        - z is a shared pointer that points at a heap allocation that contains the string. 
+var z := "stack zs8"        // z is a shared pointer that points at a heap allocation that contains the string. 
 
 
 7. Pointer Types and Assignments
 
 There are two types of assignments:
 
-v = mylist[i]           - copy assignment.
+v = mylist[i]           // copy assignment.
 
 There, v receives a copy of the i'th element if mylist. Maybe not super efficient, but good for isolation.
 
-v := mylist[i];         - reference assignment. 
+v := mylist[i];         // reference assignment. 
 
 If v has local scope (is temporary), or lives in the same vault (arena or app managed heap) with mylist, it becomes a temporary raw pointer, and mylist is unchanged. 
 If v is a class member or from a non-local scope, and does not live in the same arena with mylist, and was not qualified as raw, it becomes a shared pointer, 
@@ -428,9 +428,9 @@ and mylist becomes virtual. (Normally, things on the right side of an operator a
 pointer declarations:
 
 class Node {
-    arc Node next;              - Shared ownership
-    weak Node parent;           - Safe observer (becomes null if parent dies)
-    raw Node peer;              - fast, unsafe
+    arc Node next;              // Shared ownership
+    weak Node parent;           // Safe observer (becomes null if parent dies)
+    raw Node peer;              // fast, unsafe
 }
 
 
@@ -444,10 +444,10 @@ a. Pointer Type Syntax
 
 A * prefix on a type denotes a raw pointer. A & prefix denotes an arc (reference-counted) pointer. These can be nested:
 
-*Node p;          ; raw pointer to a Node
-&Node p;          ; arc pointer to a Node
-**Node pp;        ; raw pointer to a raw pointer to a Node
-*&Node pp;        ; raw pointer to an arc pointer to a Node
+*Node p;          // raw pointer to a Node
+&Node p;          // arc pointer to a Node
+**Node pp;        // raw pointer to a raw pointer to a Node
+*&Node pp;        // raw pointer to an arc pointer to a Node
 
 Explicit pointer types do not participate in refinement morphing. The compiler will not upgrade or change their pointer depth based on 
 how they are used. What you declare is what you get.
@@ -456,12 +456,12 @@ b. Address-of and Dereference Operators
 
 The @ operator takes the address of its operand, yielding a pointer one level deeper:
 
-*Node p = @someNode;     ; p holds the address of someNode
-**Node pp = @p;          ; pp holds the address of p itself
+*Node p = @someNode;     // p holds the address of someNode
+**Node pp = @p;          // pp holds the address of p itself
 
 The $ operator dereferences a pointer, yielding the value it points at:
 
-Node n = $p;             ; n is a copy of the Node p points at
+Node n = $p;             // n is a copy of the Node p points at
 
 $ binds tighter than ->, so $pp->next parses as ($pp)->next — dereference pp to get the inner pointer, then access next through it.
 @ binds looser than ->, so @p->next parses as @(p->next) — take the address of the next field of the node p points at.
@@ -472,21 +472,21 @@ c. Member Access Through Pointers
 
 The -> operator dereferences a pointer and accesses a member in one step:
 
-p->value = "hello";      ; write through p to its value field
-*Node q = p->next;       ; q gets a copy of p's next pointer
+p->value = "hello";      // write through p to its value field
+*Node q = p->next;       // q gets a copy of p's next pointer
 
 When the member being accessed is itself a pointer, no $ is needed — the type system knows what you have:
 
-p = p->next;             ; advance p to the next node; both are *Node
+p = p->next;             // advance p to the next node; both are *Node
 d. Copy Assignment vs Reference Assignment With Pointers
 
 Copy assignment (=) through a pointer dereferences and copies the pointed-at value:
 
 *zs8 p;
-zs8 s = p;               ; s is an zs8, a copy of the value p points at
+zs8 s = p;               // s is an zs8, a copy of the value p points at
 
 Reference assignment (:=) copies the pointer value itself, and propagates raw-constraint:
-*zs8 q := p;             ; q is also a *zs8 pointing at the same location as p
+*zs8 q := p;             // q is also a *zs8 pointing at the same location as p
 
 If the source pointer is raw-constrained, the target becomes raw-constrained. This constraint propagates transitively — 
 anything that := assigns from a raw-constrained pointer also becomes raw-constrained. 
@@ -498,17 +498,17 @@ e. Pointer Arithmetic
 
 Raw pointers support a small set of arithmetic operations:
 
-*T + u64  ->  *T          ; offset forward by n elements (u64 here is any expression that resolves to a u64)
-*T - u64  ->  *T          ; offset backward by n elements
-*T - *T   ->  u64         ; distance between two pointers of the same type
+*T + u64  ->  *T          // offset forward by n elements (u64 here is any expression that resolves to a u64)
+*T - u64  ->  *T          // offset backward by n elements
+*T - *T   ->  u64         // distance between two pointers of the same type
 
 All other arithmetic on pointer types is a compile-time error. The subscript operator is the preferred idiom for offset access — p[n] 
 is equivalent to dereferencing *T + n and is cleaner to read than explicit arithmetic in most cases:
 
 *u8 buf;
-buf[0] = 0xFF;            ; write to first byte
-buf[12] = 0x00;           ; write to thirteenth byte
-*u8 mid = @buf[len/2];    ; pointer to the midpoint
+buf[0] = 0xFF;            // write to first byte
+buf[12] = 0x00;           // write to thirteenth byte
+*u8 mid = @buf[len/2];    // pointer to the midpoint
 
 f. Pointer-to-Pointer Example
 
@@ -522,8 +522,8 @@ struct Node {
 
 RemoveNode(**Node pp, *Node target) {
     while ($pp != target)
-        $pp = $pp->next;     ; advance pp to point at current node's next field
-    $pp = target->next;      ; splice out target 
+        $pp = $pp->next;     // advance pp to point at current node's next field
+    $pp = target->next;      // splice out target 
 }
 
 *Node head;
@@ -542,7 +542,7 @@ and handles memory management automatically:
 RemoveNode(*&Node pp, &Node target) {
     while ($pp != target)
         $pp = $pp->next;
-    $pp = target->next;      ; decrements old refcount, increments new one; no leak
+    $pp = target->next;      // decrements old refcount, increments new one; no leak
 }
 
 
@@ -555,23 +555,224 @@ morphing convenience. The two forms are not interchangeable: *u8 is a fully-pinn
 morph to arc, but may, for example, morph to fluid or concurrent.
 
 
-9. Vaults
+9. Arrays
+
+Arrays are xmc's tool for committing to a layout. When you call into FFI, embed a fixed-shape buffer in another structure, or build a tight custom data structure, you
+need the compiler to leave the memory shape alone. Arrays accomplish this by pinning the fixed and rigid refinement bits in maxrmask — the morpher cannot promote them
+to resizable or fluid, and any operation that would require either becomes a compile-time error.
+
+Underneath, arrays and lists hold their elements identically. An ifmrhrss list and an array over the same data look the same in memory. The difference is one of
+commitment: a list may morph as usage demands (.add() promotes resizable; concurrent access promotes concurrent; and so on), and an array cannot — the pinned bits
+take those promotions off the table.
+
+a. Declaration
+
+The explicit form is array<T>:
+
+array<i32> a(5);
+array<u8> buf(1024);
+array<f32> samples(SampleCount());      // runtime size is fine
+
+The C-style bracket-suffix form is shorthand:
+
+i32 a[5];                               // same as array<i32> a(5)
+u8 buf[1024];                           // same as array<u8> buf(1024)
+
+Sizes need not be compile-time constants. The size is fixed at the point of declaration and pinned thereafter; what matters is that the layout doesn't change after
+that point, not that the value was knowable at compile time.
+
+The bracket suffix attaches to the variable, not the type — "i32 a[5], b;" declares a five-element array a and a single i32 b, not two arrays.
+
+b. Default Refinements and Pinning
+
+By default an array pins two bits in maxrmask:
+
+fixed       — the resizable bit cannot be promoted
+rigid       — the fluid bit cannot be promoted
+
+Operations that would require either promotion are compile-time errors:
+
+i32 a[5] = { 1, 2, 3, 4, 5 };
+a.add(6);                               // compile-time error: array's resizable bit is pinned
+
+The pinning can be released by adding the corresponding high-refinement qualifier in front of the array spelling:
+
+resizable array<i32> growable(10);      // can grow
+fluid array<var> flexible(10);          // layout free to morph
+
+Either qualifier puts the array on the same morph track as a list. Once you've added either one, the array<T> spelling is a documentation choice — you've stopped
+committing to the layout, and what you have is effectively a list.
+
+c. Initialization
+
+Curly-brace initializer lists fill the elements in order:
+
+i32 a[5] = { 1, 2, 3, 4, 5 };           // all five elements
+u8 buf[1024] = { 0 };                   // first element 0, the rest zeroed too
+i32 partial[10] = { 1, 2 };             // first two specified; remaining eight are zero
+
+When fewer initializers are supplied than the size, the remaining elements are zero. The single-element-zero idiom { 0 } is the conventional spelling for a fully
+zeroed array.
+
+The size can be left out of the brackets when an initializer is present:
+
+i32 a[] = { 1, 2, 3, 4, 5 };            // size inferred as 5
+zs8 days[] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };       // size inferred as 7
+
+The bracket-literal form [ ... ] from §5e produces a list, not an array — the literal context doesn't pin anything. To turn a literal into an array, assign it to an
+array variable:
+
+var xs = [1, 2, 3];                     // list, free to morph
+array<i32> a = [1, 2, 3];               // array; pinning takes effect, size becomes 3
+
+d. Indexing
+
+The subscript operator a[i] reads or writes the i'th element, zero-based:
+
+i32 a[5] = { 10, 20, 30, 40, 50 };
+print(a[0]);                            // 10
+a[2] = 99;                              // mutate (morphs a's mutable bit)
+i32 last = a[a.length - 1];
+
+The index expression must resolve to a non-negative integer; i32, u32, u64, and similar are all accepted. A constant index outside the declared range is a
+compile-time error. Whether out-of-range indices are checked at runtime is configured in the project file: globally they might not be, but in "debug" they might be.
+By default they are not, matching the cost profile of C array access. When checks are enabled, an out-of-range read yields a typed null in the reading expression's
+context (per §6), and an out-of-range write is a no-op (per §27 noop contagion).
+
+e. Length
+
+Every array exposes its element count as a u64 .length member:
+
+for (var i = 0; i < a.length; i++) print(a[i]);
+for (var x in a) print(x);              // for-in is preferred for plain iteration
+
+For a compile-time-sized array, .length is a compile-time constant; the morpher folds reads of .length into the constant value, with no per-iteration field access.
+For a runtime-sized array, .length is set once at declaration and pinned alongside the layout; reads still fold to a single immutable value, just one resolved at
+runtime.
+
+f. Multi-Dimensional Arrays
+
+Bracket suffixes stack to declare arrays of arrays:
+
+i32 m[3][4];                            // 3 rows of 4 i32 each, 12 elements total
+i32 grid[8][8] = { 0 };                 // 8x8, fully zeroed
+i32 ident[3][3] = {                     // 3x3 identity matrix
+    { 1, 0, 0 },
+    { 0, 1, 0 },
+    { 0, 0, 1 }
+};
+
+The explicit form nests in the natural way: array<array<i32>>.
+
+Layout is row-major: m[0][0] is followed in memory by m[0][1] through m[0][3], then m[1][0], and so on. Indexing applies left-to-right: m[i][j] is element j of row i.
+
+Subscripting with fewer indices than dimensions yields the corresponding sub-array:
+
+i32 row[4] = m[2];                      // copy the third row into a new array
+
+The fixed-and-rigid pinning applies per dimension. A multi-dimensional array can no more grow rows than it can grow row count.
+
+g. Element Type Variations
+
+The element type in array<T> can be any type-specifier. Two cases earn special mention:
+
+array<var> mixed(10);                   // ten slots, each holding any value
+array<ref> handlers(4);                 // four reference slots
+
+array<var> is heterogenous: each element is independently typed, and the morpher tracks the variant set actually stored. This is the right type for argument-vector
+storage and ad-hoc tables where the element types are known only at the call site.
+
+array<ref> holds inferred references. Each slot is frozen at first assignment, but the slots can be of different ref types (including function references) — appropriate
+for dispatch tables and similar structures where the references aren't known at declaration time.
+
+The element type interacts with the array's heterogenous bit (bit 3) independently of the fixed-and-rigid pinning. An array<var> may be heterogenous; an array<i32>
+stays homogenous because every slot holds the same concrete type.
+
+h. Relationship to Lists
+
+A list is xmc's name for an indexed sequence with all rmask bits free to morph. An array is what you get when you pin fixed and rigid in maxrmask. Same element layout
+when both are at fixed/rigid, same indexing, same .length, same iteration, same slicing rules — what differs is commitment.
+
+Choose array<T> (or T name[size]) when you have a layout commitment to make: you're calling into FFI, you're embedding the value in another struct's memory, you're
+handing the address to code that assumes a stable shape. Choose list when usage might want to grow, shrink, or otherwise reshape.
+
+If you write resizable array<T> or fluid array<T>, the pinning is released; you've chosen a list using the array spelling.
+
+i. Slicing
+
+The slice syntax described in §19d applies to arrays:
+
+i32 a[6] = { 10, 20, 30, 40, 50, 60 };
+var middle = a[2:5];                    // new array { 30, 40, 50 }
+var reversed = a[::-1];                 // new array { 60, 50, 40, 30, 20, 10 }
+
+A slice produces a new value, not a view; modifications to the slice don't affect the source. The slice's size is fixed at the slicing site. A slice of an array is
+itself an array; a slice of a list is a list.
+
+j. Arrays, Pointers, and FFI
+
+The address-of operator yields a pointer to an array's first element:
+
+i32 a[5] = { 1, 2, 3, 4, 5 };
+*i32 p = @a;                            // p points to a[0]
+*i32 q = @a[2];                         // q points to a[2]
+
+xmc does not implicitly convert arrays to pointers. Passing an array to a function that takes *T requires the explicit @; passing it to a function that takes
+array<T>, list, or var works without ceremony.
+
+For FFI declarations, the pointers to element types are used for things like buffers and strings:
+
+extern Kernel32:ReadFile(
+    hFile                  -> *ui : rcx,
+    lpBuffer               -> *u8 : rdx,        // pointer to the first byte in the buffer
+    nNumberOfBytesToRead   -> u32 : r8,         // size of the buffer
+    lpNumberOfBytesRead    -> *u32 : r9,        // pointer to a u32 to be filled with the number of bytes read
+    lpOverlapped           -> *u8               // (a byte pointer passed on the stack.. I don't believe this is actually used, but we pass a 0 anyway.)
+) -> b64 : rax;                                 // here we ask the compiler to cast the return value as an xmc boolean
+
+*u8[] is "raw pointer to an array of u8" — the xmc spelling of C's u8* parameter type. The array's length is determined by a separate length parameter or by the
+function's contract, not by xmc's type system.
+
+The array's pinning is what makes this safe. Consider the call site:
+
+u8 buf[4096];
+u32 bytesRead;
+Kernel32.ReadFile(hFile, @buf, 4096, @bytesRead, null);
+
+If buf were a list, the morpher would be free to allocate a list header pointing to a separately allocated, growable data block. @buf would yield the address of the
+header rather than the data; even if the morpher kept them adjacent, a later .add() in xmc code could reallocate the data block while the kernel was mid-write. The
+fixed pinning takes both possibilities off the table — the buffer's address and size are stable for its lifetime, and the xmc compiler will refuse code that would
+change either.
+
+The same reasoning applies to embedded fixed-shape buffers:
+
+struct Vector3 {
+    f32 elements[3];
+}
+
+Vector3 is exactly 12 bytes laid out as three contiguous f32. If elements were a list, Vector3 would contain a list header pointing to data elsewhere — different
+size, different layout, and any consumer assuming the C-equivalent struct layout would see something else entirely. The rigid pinning is what guarantees the embedded
+array stays inline.
+
+A note on the converse direction: if you write resizable array<T> or fluid array<T>, the FFI examples above stop being safe. The morpher is free to reshape the
+buffer, and the kernel call could see stale memory or the wrong address. The compiler doesn't reject @-of-resizable-array outright — there are legitimate uses inside
+xmc code — but it warns when such a pointer is passed to an extern declaration whose parameter type implies layout assumptions the array no longer satisfies.
+
+
+10. Vaults
 
 a. Arenas
 
 You can declare an arena, and put things into it, like this:
 
-arena a1(A1_SIZE);      - the size parameter is optional, if omitted, the arena will use a project-configured arena size, or try to guess at what a reasonable size might be.
+arena a1(A1_SIZE);      // the size parameter is optional, if omitted, the arena will use a project-configured arena size, or try to guess at what a reasonable size might be.
 
-list myList:a1 = ["here", "is", "a", "bit", "of", "text"];    - initially a fixed length array of pointers, placed in a1, to zs8's also placed in a1.
+list myList:a1 = ["here", "is", "a", "bit", "of", "text"];    // initially fixed in length, holding pointers, placed in a1, to zs8's also placed in a1.
 
 An arena must have the same or greater scope/lifetime of what is put in it so that by the time the arena is destroyed, the things in it are no more.
 If an object is in the same arena with something that gets assigned to it, it won't morph into a reference counted object.
 
-var v:a1 := mylist[i];   - here, since myList is also in a1, v becomes a raw pointer to the i'th element of mylist, and mylist is unchanged.
-
-Whether or not runtime subscript boundary checks are done is configured in the project file. Eg., globally they might not be, but in "debug" they might be.
-By default they are not.
+var v:a1 := mylist[i];   // here, since myList is also in a1, v becomes a raw pointer to the i'th element of mylist, and mylist is unchanged.
 
 If you remove things from mylist, since it is in an arena, the count of items goes down, but the allocated size remains the same. You can't deallocate from an arena.
 You can grow things in there, but you can't shrink them.
@@ -580,9 +781,9 @@ b. Heaps
 
 You can declare an application managed heap and put things into it, just like you can with arena:
 
-heap h1(H1_SIZE);       - the size parameter is similarly optional, if omitted, the heap will use a project-configured heap size, or try to guess at a reasonable size.
+heap h1(H1_SIZE);       // the size parameter is similarly optional, if omitted, the heap will use a project-configured heap size, or try to guess at a reasonable size.
 
-list myList:h1 = ["here", "is", "another", "list"];     - placed in h1
+list myList:h1 = ["here", "is", "another", "list"];     // placed in h1
 
 A heap, like an arena, must have the same or greater scope/lifetime of what is put in it so that when it is destroyed the things pointing into it are also gone.
 As with an arena, if an object is in the same heap with something that gets assigned to it, it won't automatically become reference counted.
@@ -622,9 +823,9 @@ Using multiple smaller vaults may result in more optimal memory access than usin
 Part III — Control Flow
 ================================================================
 
-10. Loops
+11. Loops
 
-xmc supports four loop forms: C-style for, for-in iteration, while, and do-while. Each can carry a label for use with break, continue, and reach (§12, §13).
+xmc supports four loop forms: C-style for, for-in iteration, while, and do-while. Each can carry a label for use with break, continue, and reach (§13, §14).
 
 a. C-style for
 
@@ -649,19 +850,19 @@ for (x in expr) statement
 for (var x in expr) statement
 Iterates x over the values produced by expr. The right-hand expression may be:
 
-    A generator-function call (§18a), in which case the merger inlines the generator into the loop body when both ends are visible.
-    A Generator<T> value, in which case iteration calls .next() indirectly (§18b).
+    A generator-function call (§19a), in which case the merger inlines the generator into the loop body when both ends are visible.
+    A Generator<T> value, in which case iteration calls .next() indirectly (§19b).
     A list, dictionary, or other container, in which case iteration follows the container's natural order.
-    A range expression (§18c) such as range(0, 10).
+    A range expression (§19c) such as range(0, 10).
 
 The first form (for (x in expr)) uses an existing x that is in scope; if there isn't one, it declares a new var x for the loop body (per §5). 
-The second form (for (var x in expr)) creates a new x for the loop body that shadows any existing x (see §14).
+The second form (for (var x in expr)) creates a new x for the loop body that shadows any existing x (see §15).
 
     for (var n in MyGen()) print(n);              // generator, inline-merged
     for (var item in shoppingList) print(item);   // container iteration
     for (var i in range(0, 100, 5)) print(i);     // range
 
-The loop exits when the right-hand side signals exhaustion (§18a) or when the container is fully traversed.
+The loop exits when the right-hand side signals exhaustion (§19a) or when the container is fully traversed.
 
 c. while
 
@@ -679,7 +880,7 @@ Declares x local to the loop body. On each iteration:
 
 expr is evaluated.
 
-If expr is a method on a generator handle that returns a control-flow variant (e.g., gen.next(), see §15), the exhaustion signal exits the loop and the body does 
+If expr is a method on a generator handle that returns a control-flow variant (e.g., gen.next(), see §16), the exhaustion signal exits the loop and the body does 
 not run for that iteration. Otherwise, expr's result binds to x, and the result's truthiness determines whether the body runs. A falsy result exits the loop; a truthy
 result runs the body with x bound to the value.
 
@@ -707,7 +908,7 @@ The body executes once unconditionally, then cond is evaluated; if truthy, the b
 f. break and continue
 
 break exits the innermost enclosing loop. continue jumps to the next iteration — for for, that means evaluating the update slot and then cond; for while, that means
-evaluating cond; for do-while, that means evaluating cond; for for-in, that means advancing to the next value. break and continue may be qualified with a label (§12) 
+evaluating cond; for do-while, that means evaluating cond; for for-in, that means advancing to the next value. break and continue may be qualified with a label (§13) 
 to target an outer loop or block:
 
     for (var i in range(0, n)) {:outer 
@@ -719,7 +920,7 @@ to target an outer loop or block:
 
 g. Loop labels
 
-Any loop may carry a label for use with reach, break, or continue. Labels follow the form established in §12:
+Any loop may carry a label for use with reach, break, or continue. Labels follow the form established in §13:
 
     while (true) {:scan
         once hits = 0;                      // static! Counts the total. Only initialized to 0 once.
@@ -734,7 +935,7 @@ The label appears immediately after the loop body's opening brace. It is in scop
 it exits.
 
 
-11. Switch and Case
+12. Switch and Case
 
 The switch statement matches a value against a set of cases and runs the body of the first matching case. There is no fall-through; each case body runs only if its case
 matches, and execution continues after the closing brace.
@@ -779,7 +980,7 @@ switch (cmd) {
 The values in a value list must be expressions whose value is known at the comparison point — typically literals or named constants. The list does not refer to the key; 
 the comparison is implicit.
 
-Expression form — a boolean expression that mentions it (or the named binding, if the switch declares one — see §11d). The case matches if the expression evaluates 
+Expression form — a boolean expression that mentions it (or the named binding, if the switch declares one — see §12d). The case matches if the expression evaluates 
 truthy:
 
 switch (m[i][j]) {
@@ -803,7 +1004,7 @@ switch (typeof(v)) {
     Shot: HandleShot(v);
 }
 
-typeof(v) returns a Class value (see §11f). The class names in the cases are also Class values. Matching is == on Class, which means exact match: a value of a class 
+typeof(v) returns a Class value (see §12f). The class names in the cases are also Class values. Matching is == on Class, which means exact match: a value of a class 
 derived from Ship will not match the Ship case. For matching that accepts subclasses, switch on the value itself and use is in expression-form cases:
 
 switch (v) {
@@ -812,7 +1013,7 @@ switch (v) {
     v is Shot: HandleShot(v);
 }
 
-Each is test returns true if the value is the named class or any class derived from it (§13a). The two forms compose. 
+Each is test returns true if the value is the named class or any class derived from it (§14a). The two forms compose. 
 
 Combined match-with-fallback:
 
@@ -858,7 +1059,7 @@ switch (state) {
     *: ...
 }
 
-A bare break inside a switch nested in a loop exits the switch, not the loop. To exit the loop from inside the switch, use a labeled break (§12):
+A bare break inside a switch nested in a loop exits the switch, not the loop. To exit the loop from inside the switch, use a labeled break (§13):
 
 for (var x in list) {:loop
     switch (x) {
@@ -889,9 +1090,9 @@ Comparing two class names directly is well-formed but constant-folded: Dog == Ca
 is degenerate the useful cases are comparisons involving typeof() calls or Class-typed variables whose values are not known at compile time.
 
 
-12. Nested Scope Labels and Break;
+13. Nested Scope Labels and Break;
 
-A scope label is the first token after an opening brace. It exists only on braced bodies. As mentioned in 10g, any loop body can be braced — so any loop can be labeled, 
+A scope label is the first token after an opening brace. It exists only on braced bodies. As mentioned in 11g, any loop body can be braced — so any loop can be labeled, 
 but only if you use braces. The break verb can be targetted at a label, in which case the break breaks out of the labeled scope.
 
 {:top
@@ -904,7 +1105,7 @@ but only if you use braces. The break verb can be targetted at a label, in which
 }
 
 
-13. Reaching
+14. Reaching
 
 You can "reach" into a nested scope after the scope to pull out values. A name declared in a nested scope is accessible by ordinary name resolution in the enclosing scope 
 after the nested scope exits:
@@ -919,7 +1120,7 @@ myProc(){
     if (q(n)) HandleQCase(n);
 }
 
-A label-qualified name reaches into a labeled block specifically (§14d):
+A label-qualified name reaches into a labeled block specifically (§15d):
 
     myProc() {
         while (true) {
@@ -971,7 +1172,7 @@ refers to the outer variable (the binding visible at the point of the declaratio
 introduces the new binding in the enclosing scope. From the next statement onward, u is the new binding.
 
 
-14. Shadowing
+15. Shadowing
 
 A shadow has its own storage, separate from the variable it shadows. Assignments to a shadow do not affect the variable it shadows.
 
@@ -983,7 +1184,7 @@ dispatch members without re-checking the tag. This is flow-sensitive knowledge a
 made, and x inside the body is still the same variable as x outside.
 
 Use the explicit shadow form when you need a separate binding — for example, to pass the narrowed value to a function whose parameter type is strictly Type, or to capture
-the narrowed value into a name that will outlive the if-body via labeled-block reach (§14d). For the common case of "I want to call methods on the narrowed type within the 
+the narrowed value into a name that will outlive the if-body via labeled-block reach (§15d). For the common case of "I want to call methods on the narrowed type within the 
 body," no shadow is needed:
 
 if (u is User) u.login();           // no shadow; u is still the variant outside
@@ -996,7 +1197,7 @@ if (u is User) {:authed
 
 b. Shadows in pipe handlers
 
-The pipe operator's it binding (§15c) is a shadow that exists only inside the pipe handler block. The handler's it shadows nothing in the enclosing scope unless the
+The pipe operator's it binding (§16d) is a shadow that exists only inside the pipe handler block. The handler's it shadows nothing in the enclosing scope unless the
 enclosing scope happens to have a variable named it — which hopefully it usually doesn't.
 
 c. Shadowing rule in general
@@ -1008,7 +1209,7 @@ resolves to the innermost binding visible at the point of reference.
 d. Reaching past a shadow
 
 A shadow conceptually creates a nested scope around the shadow declaration: the shadow lives inside this implicit inner scope, and the outer binding is unaffected. 
-Reaching follows the §13 rule — it addresses the named scope, not the scopes inside it. So a reach into the scope that contains the shadow declaration reads the outer
+Reaching follows the §14 rule — it addresses the named scope, not the scopes inside it. So a reach into the scope that contains the shadow declaration reads the outer
 binding (the shadow lived in an inner scope, not visible to this reach):
 
 var u = database.find(id);
@@ -1035,15 +1236,15 @@ The label-qualified name resolves the identifier within the labeled scope's bind
 scopes within the labeled scope are out of scope at the end of the label and not addressable through it; label the inner scope as well if you need to address it.
 
 
-15. Control-Flow Variants
+16. Control-Flow Variants
 
 Some return values aren't "values" in the ordinary sense — they're signals that the call's normal control flow didn't happen. xmc has two such signals built into the
-language: errors, produced by failed operations, and exhaustion, produced by generators that have nothing more to yield (§18). The language treats both with the same 
+language: errors, produced by failed operations, and exhaustion, produced by generators that have nothing more to yield (§19). The language treats both with the same 
 machinery: they are control-flow variants — variant tags the compiler recognizes specially and routes to designated handling sites instead of forcing the programmer to
 inspect them inline. 
 
-The handling sites are the error block ({? ?}), the pipe operator (|), and certain loop-binding forms (§18a). Any control-flow variant returned from an expression in 
-one of these sites is intercepted and routed; outside these sites, control-flow variants behave like ordinary variants and the noop-contagion rules of §25 apply.
+The handling sites are the error block ({? ?}), the pipe operator (|), and certain loop-binding forms (§19a). Any control-flow variant returned from an expression in 
+one of these sites is intercepted and routed; outside these sites, control-flow variants behave like ordinary variants and the noop-contagion rules of §27 apply.
 
 a. The error Class Factory
 
@@ -1069,9 +1270,39 @@ An error block is a brace pair in which any expression returning an error varian
     print(head);                    // never runs either
 ?}
 
-An error block also exits when a null-returning call sets __missing_attribute — see §15d and §25d.
+An error block also exits when a null-returning call sets __missing_attribute — see §16e and §27d.
 
-c. The Pipe Operator
+c. OnError Clauses
+
+An OnError clause is a statement that declares what to do when a preceding error block 
+exits via failure of a specific error kind:
+
+{?
+    var file = open("data.txt");
+    var head = file.read(10);
+    print(head);
+?}
+OnError(FileOpenFailed) { errout("could not open: {it.message}"); return; }
+OnError(IoError)        { LogIoError(it); }
+OnError                 { errout("unhandled: {it}"); return; }    // catch-all
+
+Each clause names the error kind it catches in parentheses, or none for a catch-all. The clauses are tested in source order against the error kind that caused 
+the block to exit; the first clause whose kind matches runs and its body executes. Within the body, the binding it refers to the error object that caused the exit.
+
+A catch-all clause binds it as XmcError, the language's base error type; the body can narrow further via is-checks against specific kinds (§12g).
+
+Multiple OnError clauses may follow a single error block. They are tested in the order written, so kind-specific clauses should appear before any catch-all. An 
+OnError clause not preceded by an error block is a syntax error.
+
+If the error block exits via failure but no clause's kind matches, control passes through to whatever follows the clauses — the unmatched error is dropped. Pair an 
+explicit error block with a catch-all when that is not what you want.
+
+Each clause's body is a normal statement block. It can return from the enclosing function, break or continue an enclosing loop, or complete and fall through to 
+the code after the clauses. Clauses do not fall through into each other — completion of one clause's body leaves the OnError chain entirely.
+
+A clause naming an error kind that none of the block's fallible calls can produce is a compile-time warning (dead clause).
+
+d. The Pipe Operator
 
 The pipe operator handles a control-flow variant inline at the call site, binding the variant to the name it for inspection:
 
@@ -1117,7 +1348,7 @@ ProcessAllFiles(ref files) {
 }
 
 
-d. Thread-Local Error Flags
+e. Thread-Local Error Flags
 
 Several thread-local flags are set by language operations and can be checked by the programmer when needed. The compiler does not generate code to check them unless 
 they are used in the source.
@@ -1125,7 +1356,7 @@ they are used in the source.
 __carry and __overflow      — set by numeric operations that produce carry or overflow, as described in §5d.
 __missing_attribute         — set when a runtime attribute lookup fails to find the named attribute on a fluid type, cleared when the lookup succeeds. 
                               Reflects the result of the most recent attribute lookup only. Used by error blocks to detect failed attribute lookups on null calls 
-                              where no error variant is produced. See §17g.
+                              where no error variant is produced. See §18g.
 
 
 
@@ -1133,7 +1364,7 @@ __missing_attribute         — set when a runtime attribute lookup fails to fin
 Part IV — Functions, Generators, and Comprehensions
 ================================================================
 
-16. Functions
+17. Functions
 
 a. Named Functions
 
@@ -1196,11 +1427,11 @@ A parameter declared without a type specifier is implicitly var:
 Apply(fn, thing) { fn(thing); }     // fn and thing are var
 
 When a var parameter's type cannot be resolved from the function body alone, the function becomes an implicit generic — the body is cloned and specialized 
-per distinct argument type at each call site. See §25a.
+per distinct argument type at each call site. See §27a.
 
 A parameter declared with ref is similarly inferred per call site, and the body is similarly cloned per distinct inferred type. The difference is that within each
 specialization the type and rmask are pinned at whatever the call-site argument implies, where var leaves further morphing open within the specialization. Use ref 
-when you want per-site specialization without subsequent morphing — function-reference parameters are the typical case (§17h).
+when you want per-site specialization without subsequent morphing — function-reference parameters are the typical case (§18h).
 
 ApplyToList(list items, ref fn) {
     for (var item in items)
@@ -1210,7 +1441,7 @@ ApplyToList(list items, ref fn) {
 ApplyToList(myList, myInstance.Process(zs8));    // specialized for this signature
 
 
-17. Function Pointers and First-Class Functions
+18. Function Pointers and First-Class Functions
 
 Functions in xmc are first-class values. They can be stored in variables, passed as parameters, added to containers, and assigned as runtime 
 attributes to fluid types. There are two forms of function variable: inferred (ref) and explicitly typed (function(...)).
@@ -1220,21 +1451,22 @@ a. Inferred Function References
 A ref variable infers its function signature from the first assignment and then holds that signature fixed. Subsequent assignments must match 
 the inferred signature or a compile-time error is emitted:
 
-ref fn1 = myInstance.AddToList(zs8);   ; inferred: bound, signature (zs8) -> null
-ref fn2 = MyClass:Swap(i32, i32);      ; inferred: unbound, signature (i32, i32) -> null
+ref fn1 = myInstance.AddToList(zs8);   // inferred: bound, signature (zs8) -> null
+ref fn2 = MyClass:Swap(i32, i32);      // inferred: unbound, signature (i32, i32) -> null
 
-fn1 = otherInstance.AddToList(zs8);    ; ok — same signature, different receiver
-fn1 = myInstance.AddToList(u32);       ; error — signature mismatch
+fn1 = otherInstance.AddToList(zs8);    // ok — same signature, different receiver
+fn1 = myInstance.AddToList(u32);       // error — signature mismatch
 
 b. Explicitly Typed Function References
 
 An explicit function(...) type declaration states the signature upfront. This is used when you want to declare a function variable before 
 assigning it, or when you want the type to be self-documenting:
 
-function(zs8) -> b  fn3;               ; declared, nothing bound yet
-fn3 = myInstance.AddToList(zs8);       ; ok — signatures match
-fn3 = MyClass:AddToList(zs8);          ; ok — same signature, different target
-fn3 = myInstance.AddToList(u32);       ; error — signature mismatch
+function(zs8) -> b fn3;               // declared, nothing bound yet
+fn3 = myInstance.AddToList(zs8);       // ok — signatures match
+fn3 = MyClass:AddToList(zs8);          // ok — same signature, different target
+fn3 = myInstance.AddToList(u32);       // error — signature mismatch
+
 When an explicit type is provided, ref is not used — the function(...) type replaces it entirely.
 
 c. Bound vs Unbound References
@@ -1353,7 +1585,7 @@ ApplyToList(list items, ref fn) {
 ApplyToList(myList, myInstance.Process(zs8));       ; specialized at call site
 
 When ref is used as a parameter type, the compiler infers the signature from what is passed at each call site and produces a specialized version of the 
-enclosing function for each distinct signature, following the same implicit generics rules described in section 25.
+enclosing function for each distinct signature, following the same implicit generics rules described in section 27.
 
 i. Type Testing Function References
 
@@ -1382,10 +1614,10 @@ hand side receives null.
 
 If the matched function is generic and its return type was not fully resolved at specialization time, the return value is an unresolved var. A type anchor 
 on the left hand side will resolve it there; if no type anchor is available the result stays unresolved and operations on it follow the noop-contagion rules 
-described in section 25d.
+described in section 27d.
 
 
-18. Generators, ranges and slices
+19. Generators, ranges and slices
 
 a. Generators
 
@@ -1509,7 +1741,7 @@ i8 EveryOther(list xs) {
 for (var x in EveryOther(myList)) print(x);
 
 
-19. Comprehensions
+20. Comprehensions
 
 a. list comprehensions
 
@@ -1520,15 +1752,15 @@ var l = [upper(s) for s in name];   // list comprehension. Generates a list of w
 
 Let's say name is a zs8 and its elements are c8's.
 
-l = [n*n for n in range(10)];       - now the elements of l are variants. Either c8's or integers. Not exactly ideal, but possible.
+l = [n*n for n in range(10)];       // now the elements of l are variants. Either c8's or integers. Not exactly ideal, but possible.
 
-l[6] = "woohoo!"                    - now the list element variant types are u8, c8 or zs8.
+l[6] = "woohoo!"                    // now the list element variant types are u8, c8 or zs8.
 
-var v = l[6]                        - the variable v shadows whatever v was before. Now it's a variant, for the rest of the scope.
+var v = l[6]                        // the variable v shadows whatever v was before. Now it's a variant, for the rest of the scope.
 
 if (v == 6*6) { print("maybe, but no"); }
 else if (v == "woohoo!") { print("there you go"); }
-else if (v == someObjectInstance) { print("nope"); }     - comparison's don't morph things, they just return false if they don't make sense.
+else if (v == someObjectInstance) { print("nope"); }     // comparison's don't morph things, they just return false if they don't make sense.
 
 b. map comprehensions
 
@@ -1537,7 +1769,7 @@ values = [1, 2, 3]
 combined = {k: v for k, v in zip(keys, values)}
 
 
-20. Threading
+21. Threading
 
 - spawn blocks
 
@@ -1574,7 +1806,224 @@ The error should show the source code line (with filename and line number) that 
 Part V — Aggregates and Inheritance
 ================================================================
 
-21. Structs
+22. Enums
+
+An enum is a named scope containing a set of named integer values. It exists to give meaningful names to a small fixed set of states — directions, error codes, log
+levels, parser states — without paying for a struct's storage overhead and without polluting the enclosing scope with a flock of bare constants.
+
+Per the dot-vs-colon rule (Key Decision #11), the enum name is a scope and its values are reached through the colon:
+
+enum Direction { North, South, East, West };
+
+Direction d = Direction:North;
+print(d == Direction:South);            // false
+
+The values are members of Direction's scope, not the enclosing scope; bare North does not resolve to anything. This matches the way ClassName:staticMember works for
+classes — the scope name on the left of the colon, the member name on the right.
+
+a. Declaration
+
+The basic form lists value names in braces:
+
+enum Direction { North, South, East, West };
+
+enum Severity {
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Fatal
+};
+
+Each name becomes a value in the enum's scope: Direction:North, Direction:South, Severity:Debug, and so on. The names follow the same identifier rules as variable
+names; they cannot collide with each other within the enum, but two different enums may use the same value name without conflict (Severity:Error and Action:Error are
+distinct).
+
+b. Underlying Integer Type
+
+By default an enum's underlying type is the smallest unsigned integer that fits all of its values. A four-value enum like Direction picks u8; an enum with values up to
+300 picks u16; and so on. The morpher chooses based on the value range after all values are computed.
+
+To pin the underlying type explicitly, use the angle-bracket form:
+
+enum<i32> ErrCode { OK, NotFound, Denied, Internal };
+enum<u32> Magic { Header = 0xDEADBEEF, Footer = 0xCAFEBABE };
+
+The explicit form is the right choice when the enum will cross an FFI boundary, when its values need a specific bit-width, or when it embeds in a struct whose layout
+must be stable. The bracketed type may be any of the integer numeric types: i8, i16, i32, i64, u8, u16, u32, u64.
+
+c. Explicit Values and Auto-Increment
+
+Values may be specified explicitly with =, and any unspecified value takes the previous value plus one. The first value, if unspecified, is zero:
+
+enum Status {
+    OK,                                 // 0
+    Warning,                            // 1
+    Error                               // 2
+};
+
+enum HttpCode {
+    Continue        = 100,              // 100
+    Switching,                          // 101
+    OK              = 200,              // 200
+    Created,                            // 201
+    BadRequest      = 400,
+    NotFound        = 404,
+    ServerError     = 500
+};
+
+Two values within the same enum may share an integer value — useful for aliases like Severity:Critical = Severity:Fatal, or for any reason you happen to want.
+The compiler does not warn either way; if you wrote it, it's what you wrote.
+
+Specified values must fit the underlying type. enum<u8> with a value of 300 is a compile-time error.
+
+d. Use and Comparison
+
+An enum value is, at runtime, exactly its underlying integer. Direction:East is a u8 with value 2; nothing more. The enum type is a compile-time hint and a named scope
+for the values — useful for intellisense, useful for documenting intent — but it carries no runtime tag and imposes no extra storage cost.
+
+This means enum values participate in arithmetic and comparison the way any integer of their underlying type does:
+
+Direction d = Direction:East;
+u8 prev = d;
+if (d == Direction:North) ...;
+if (d == 0) ...;                        // equivalent: Direction:North is 0
+if (d < Direction:South) ...;           // relational comparisons work too
+if (d == Severity:Info) ...;            // cross-enum comparison: just an integer compare
+
+Cross-enum comparison is allowed and means exactly what it says: compare the integer values. The compiler does not warn — if you wrote that comparison, you presumably
+meant it. The same goes for comparing an enum value to a bare integer or to an arithmetic expression.
+
+e. Storage in Variants and Structs
+
+In structs, enum members occupy exactly the underlying type's bytes — no tag, no padding beyond what the underlying type would need on its own:
+
+struct Player {
+    zs8 name;
+    Direction facing;                   // one byte
+    Severity logLevel;                  // one byte
+    i32 score;
+};
+
+In a var, an enum-typed assignment behaves like assigning the underlying integer plus a compile-time hint that this slot is "an enum of type T":
+
+var u = SomeFunction();
+u = Direction:North;                    // u is now u8 with the Direction hint
+
+The morpher can use the hint to keep intellisense working at later use sites, but the runtime value is just the integer.
+
+f. Conversion to and from Numbers
+
+Enum values and integers convert in both directions without ceremony:
+
+Direction d = Direction:East;
+u8 raw = d;                             // raw is 2 (East's auto-incremented value)
+i32 wider = d;                          // widens to i32 normally
+Direction back = raw;                   // just an assignment; raw was already a u8
+
+There is no runtime range check, no casting requirement, no compiler complaint when an out-of-range integer ends up assigned to an enum-typed variable. The variable
+holds whatever bit pattern was assigned. Subsequent comparisons against named values simply tell the truth: an out-of-range value is equal to none of them.
+
+If you genuinely need defensive conversion — checking that a wire-format byte is one of the legal values before treating it as the enum — write it explicitly:
+
+u8 n = ReadByte();
+if (n <= Direction:West) {              // values are 0..3
+    Direction d = n;
+    ...
+}
+
+This is not idiomatic enum code; it is defensive integer handling that happens to land in an enum-typed variable. Most enum use never needs it.
+
+g. Bitwise Operations and Hex Bitmaps
+
+Because enum values are integers, the bitwise operators (|, &, ^, ~, <<, >>) work between them with no extra machinery. Hex literals as enum values give you a bitmap:
+
+enum<u32> Permissions {
+    Read    = 0x01,
+    Write   = 0x02,
+    Execute = 0x04,
+    Delete  = 0x08,
+    All     = Read | Write | Execute | Delete
+};
+
+Permissions p = Permissions:Read | Permissions:Write;
+
+if ((p & Permissions:Read) != 0) ...;
+if ((p & Permissions:All) == Permissions:All) ...;
+
+The All value is a perfectly fine enum value — the named-values list is exhaustive only if you choose to keep it that way; combining named values with | to form composites
+is normal use.
+
+h. The use Directive
+
+Within any scope, the use directive brings an enum's values into the local lookup chain so they can be referenced without the enum-name qualifier:
+
+use Permissions;
+i32 mask = Read | Write | Execute;
+if ((mask & Delete) == 0) ...;
+
+The qualifier-less names are looked up in the order: local declarations, then names brought in by use, then enclosing scopes. A local variable named Read shadows
+Permissions:Read; an outer-scope Read is shadowed by the use.
+
+Multiple use directives in the same scope are fine, even if their enums share value names. The compiler raises no error or warning at the use directives themselves.
+The check happens at each unqualified reference: if a name resolves to more than one candidate brought in by use, the compiler reports an ambiguity at that reference
+and asks for the qualifier. References to non-colliding names from either enum continue to work without qualification.
+
+use Permissions;                // has Read, Write, Execute, Delete
+use FileMode;                   // has Read, Write, Append
+
+i32 mask = Permissions:Read;    // fine — qualified
+i32 m    = Append;              // fine — only FileMode has Append
+i32 r    = Read;                // error: Read is ambiguous (Permissions:Read or FileMode:Read?)
+
+This makes use a tool the programmer can apply liberally without worrying that bringing in a second enum will retroactively break code that references the first.
+Only the names that actually collide need disambiguation, and only at the points where they are used.
+
+use is scoped: it applies from the directive to the end of the enclosing scope. It is allowed at namespace scope, function scope, or any nested block. It is a
+declaration, not an executable statement, and may appear anywhere a variable declaration can.
+
+i. Switch Integration
+
+The switch statement (§12) accepts enum values directly. Value-list cases use the colon-scoped form:
+
+switch (d) {
+    Direction:North, Direction:South:   doVertical();
+    Direction:East:                     doEast();
+    Direction:West:                     doWest();
+}
+
+The case-label terminator colon and the enum-scope colon are syntactically unambiguous: the enum-scope colon is followed by an identifier, the case-label colon by an
+expression or block. With a use Direction; directive in scope, the same switch reads:
+
+use Direction;
+switch (d) {
+    North, South:   doVertical();
+    East:           doEast();
+    West:           doWest();
+}
+
+There is no exhaustiveness check. A switch that doesn't cover every named value is fine; if no case matches, execution continues past the switch (the standard noop
+behavior from §12).
+
+j. is and typeof
+
+is and typeof on a plain enum-typed variable are settled at compile time, because there is no runtime type tag to consult:
+
+Direction d = ReadDirection();
+if (d is Direction) ...;                // always true; the compiler folds it
+if (typeof(d) == Direction) ...;        // same
+
+These forms are generally not useful for plain enum variables — the compiler knows the answer — but they're not errors either. Where they do useful work is when the
+enum lives inside a var:
+
+var u = SomeFunction();
+u = Direction:North;                    // u's variant set now includes Direction
+if (u is Direction) DoDirectionThing(); // runtime check via the variant's tag
+
+In a variant, the enum participates in the standard tag-based dispatch. Without the variant, the enum is just an integer with a name.
+
+
+23. Structs
 
 a. Struct Declaration
 
@@ -1608,7 +2057,7 @@ You can pass construction parameters to functions that take a struct just like y
 
 d. Struct Inheritance
 
-A struct can inherit from multiple other structs. (See section 23 on inheritance.)
+A struct can inherit from multiple other structs. (See section 25 on inheritance.)
 
 e. Anonymous Structs
 
@@ -1676,10 +2125,10 @@ named type.
 
 Anonymous struct in a generic context - When a generic function returns an anonymous struct whose field types depend on the generic's type parameters, the synthesized type
 is parameterized along with the function: each specialization of the generic gets a corresponding specialized anonymous struct. The morpher tracks these alongside its other 
-generic-specialization machinery (§25).
+generic-specialization machinery (§27).
 
 
-22. Classes
+24. Classes
 
 Classes are the same as structs except they have function members, and you can supply coded constructors and destructors.
 
@@ -1689,7 +2138,7 @@ class MyClass {
 }
 
 
-23. Inheritance
+25. Inheritance
 
 A class may inherit from one or more other classes by listing them after a colon in the declaration:
 
@@ -1697,7 +2146,7 @@ class Animal { ... }
 class Talker { ... }
 class Dog : Animal, Talker { ... }
 
-A struct may similarly inherit from other structs (section 21). The rules in this section apply equally to class and struct inheritance, with the
+A struct may similarly inherit from other structs (section 23). The rules in this section apply equally to class and struct inheritance, with the
 single difference that structs cannot declare function members directly and so the inherited-function-call discussion below applies to classes
 only.
 
@@ -1705,7 +2154,7 @@ Inheritance in xmc composes member sets. A derived class has access to all membe
 the member-lookup rules below define which member a given access resolves to when more than one candidate exists.
 
 There is no virtual dispatch, all member calls resolve statically based on the static type at the call site. Polymorphic-style behavior is expressed 
-through var parameters and the implicit-generics mechanism of section 25, not through runtime type tags or vtables.
+through var parameters and the implicit-generics mechanism of section 27, not through runtime type tags or vtables.
 
 a. Classes as Scopes
 
@@ -1714,7 +2163,7 @@ resolve the next identifier:
 
 filename:freeFunction         ; into a file scope
 mymodule:helper               ; into a namespace scope (section 3)
-MyClass:GetCount              ; into a class scope (static member, section 24)
+MyClass:GetCount              ; into a class scope (static member, section 26)
 Talker:Speak                  ; into a base class scope (inherited member)
 
 These are the same operator. What differs across the four lines is what kind of thing the identifiers name.
@@ -1735,7 +2184,7 @@ The algorithm:
         If the new frontier is empty, the lookup has failed.
 
 A failed lookup is not a compile error. It produces a warning at the call site and the access becomes a noop, consistent with the noop-
-contagion rules of section 25. A read of a missing member yields a typed null in context; a call to a missing function performs no
+contagion rules of section 27. A read of a missing member yields a typed null in context; a call to a missing function performs no
 operation; an assignment to a missing data member is discarded. This keeps inheritance lookups uniform with fluid-type lookups, var-type
 lookups, and other places in xmc where missing members are recoverable rather than fatal.
 
@@ -1809,7 +2258,7 @@ class Dog : Animal {
 }
 
 The same form used outside a member function, or with a class that is not a base of the enclosing class's static type, does not get implicit
-self forwarding — it's an unbound reference per section 17c, and either needs an explicit receiver argument or is being used as a function
+self forwarding — it's an unbound reference per section 18c, and either needs an explicit receiver argument or is being used as a function
 reference rather than a call. The Morpher distinguishes the two cases by the syntactic context (call form vs. reference form) and by whether
 the qualified class is a base of self's type.
 
@@ -1836,14 +2285,14 @@ MakeNoise(var a) { a.Speak(); }
 MakeNoise(Dog());                ; cloned and morphed for Dog → calls Dog:Speak
 MakeNoise(Animal());             ; cloned and morphed for Animal → calls Animal:Speak
 
-The var parameter route invokes section 25's implicit generics: the body is cloned at each call site and the clone is morphed against the actual
+The var parameter route invokes section 27's implicit generics: the body is cloned at each call site and the clone is morphed against the actual
 argument type. Each call site gets its own specialization, and member accesses inside the clone resolve against the actual type rather than a
 declared base. This is xmc's polymorphism — opt-in, expressed in the parameter type, no runtime dispatch overhead.
 
 g. Generic Members Inherited Through Bases
 
 A function member declared with var parameters in a base class can be inherited by a derived class. Calls to it from a derived instance follow
-the implicit-generics rule of section 25: the body is cloned at the call site and morphed against the actual argument types, with self
+the implicit-generics rule of section 27: the body is cloned at the call site and morphed against the actual argument types, with self
 substituted for the derived type rather than the base type.
 
 class Container { Add(var item) { items.append(item); } }
@@ -1859,7 +2308,7 @@ specific to the clone.
 
 h. The is Operator and Inheritance
 
-The is operator (section 17i) returns true when a value's static type is the queried type or is derived from it:
+The is operator (section 18i) returns true when a value's static type is the queried type or is derived from it:
 
 class Animal { ... }
 class Dog : Animal { ... }
@@ -1871,7 +2320,7 @@ d is Animal                      ; true — Dog inherits from Animal
 The check walks the declared inheritance graph at compile time when both sides are known, and emits a constant true or false. When the left side
 is a var or a fluid type whose actual class is not statically known, the check becomes a runtime test against the type tag carried by the value.
 
-For function-signature is checks, inheritance does not enter into it — signatures match exactly on parameter and return types per section 17i,
+For function-signature is checks, inheritance does not enter into it — signatures match exactly on parameter and return types per section 18i,
 and a function taking Dog is not interchangeable with a function taking Animal even though Dog is-an Animal.
 
 i. Hard Errors vs. Noop Failures
@@ -1903,7 +2352,7 @@ A class may not directly or indirectly inherit from itself. The inheritance grap
 declaration processing and reported as fatal errors at the declaration that closes the cycle.
 
 A class may not inherit from a struct, and a struct may not inherit from a class. The two are kept separate because their semantics around
-function members and constructors differ (section 22) and mixing the two would produce unclear member-set semantics. A class that wants
+function members and constructors differ (section 24) and mixing the two would produce unclear member-set semantics. A class that wants
 struct-like data layout with no functions can simply declare none.
 
 There is no concept of private, protected, or public inheritance. All inherited members are accessible through the derived class. Access
@@ -1911,7 +2360,7 @@ modifiers in general are not part of xmc's design — visibility is managed thro
 member access flags.
 
 
-24. Static Function Members and Once Data Members
+26. Static Function Members and Once Data Members
 
 xmc provides two modifiers for class-scoped members that depart from ordinary instance semantics:
 
@@ -1925,7 +2374,7 @@ The two modifiers are independent. A class may have static members, once members
 body) may have once locals but cannot have static or once *members* in the class-scoped sense; the static/once-member discussion below
 specifically covers class-level declarations.
 
-Inheritance interactions for static and once members are covered in section 23 (Inheritance). This section focuses on the modifiers
+Inheritance interactions for static and once members are covered in section 25 (Inheritance). This section focuses on the modifiers
 themselves.
 
 a. Once Locals in Function Bodies
@@ -2016,7 +2465,7 @@ and the difference is observable.
 
 e. Once locals in generic functions
 
-A function with var parameters is cloned per call site under section 25's implicit-generics rule. Each clone is a separate function for
+A function with var parameters is cloned per call site under section 27's implicit-generics rule. Each clone is a separate function for
 the purpose of once-local storage: the clone for MakeNoise(Dog) and the clone for MakeNoise(Cat) have independent once locals that
 initialize independently and do not share state.
 
@@ -2139,10 +2588,10 @@ are taken with the colon qualifier:
 ref fn = Counter:GetCount;     // reference to a static function
 i32 n = fn();                  // called with no receiver
 
-This parallels the dot form for instance methods (section 17c), which yields an unbound reference requiring an explicit receiver argument.
+This parallels the dot form for instance methods (section 18c), which yields an unbound reference requiring an explicit receiver argument.
 The colon form yields a callable directly; the dot form yields a callable that takes the receiver as its first argument.
 
-For a generic static function, the specialization syntax from section 17d applies:
+For a generic static function, the specialization syntax from section 18d applies:
 
 class Math {
     static var Max(var a, var b) { return a > b ? a : b; }
@@ -2153,7 +2602,7 @@ i32 m = fn(3, 7);
 
 Static function references can be stored in containers, assigned as
 runtime attributes on fluid types, and managed through pointer types
-exactly as in sections 17e through 17g.
+exactly as in sections 18e through 18g.
 
 k. Static Functions vs. Free Functions
 
@@ -2220,7 +2669,7 @@ storage -- observes a zero-initialized state. [Are these cases readily detectabl
 initialization process, when we detect a self referencing initialization.] The flag at that point is in the "running" state, not "done"; 
 rather than deadlock or recurse infinitely, the read returns the underlying zero bytes interpreted as the storage's type.
 
-Under xmc's null-and-noop semantics (section 25), this typically yields a typed null in the reading expression's context, and noop
+Under xmc's null-and-noop semantics (section 27), this typically yields a typed null in the reading expression's context, and noop
 contagion handles the rest gracefully. The compiler emits a warning when it can statically prove a self-reference. The runtime behavior
 is well-defined and recoverable rather than undefined or fatal. 
 
@@ -2282,7 +2731,7 @@ flags.
 Part VI — Metaprogramming and FFI
 ================================================================
 
-25. Generic Code, Member Resolution, and Null Propagation
+27. Generic Code, Member Resolution, and Null Propagation
 
 Functions may specify types they require, or they may take var types:
 
@@ -2402,17 +2851,24 @@ RemoveNode(**var pp, *var target) {
 }
 
 
-26. External Call Definitions
+28. External Call Definitions
 
 // Explicit ABI mapping
 extern kernel32:WriteFile(
-    hFile:          u64 -> rcx,         // a u64 (value) passed in RCX..
-    lpBuffer:       *u8[] -> rdx,       // a (non-morphing, raw) pointer to an array of u8's passed in RDX
-    nBytes:         u32 -> r8,          // a u32 passed in R8
-    lpWritten:      *u64 -> r9,         // a pointer to a u64 passed in R9
-    lpOverlapped:   *u64                // a pointer to a u64 passed on the stack
-) -> u32:rax;
+    handle       -> *u8  : rcx,         // (64-bit) pointer to a byte passed in RCX
+    buffer       -> *u8  : rdx,         // .. passed in RDX
+    bytesToWrite -> u32  : r8,          // u32 value passed in R8
+    bytesWritten -> *u32 : r9,          // pointer to a u32 passed in R9
+    overlapped   -> *u8                 // on stack — no register clause
+) -> b64 : rax;
 
+extern kernel32:GetStdHandle(
+    stdHandleId -> i32 : rcx
+) -> *u8 : rax;
+
+extern kernel32:ExitProcess(
+    exitCode -> u32 : rcx
+);                                     ; no return clause — void
 
 
 ================================================================

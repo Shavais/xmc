@@ -97,19 +97,19 @@ namespace xmc
 				reader._projectFile[key] = value;
 		}
 
-		// Apply maxthreads if present and valid.
-		if (reader._projectFile.contains("maxthreads")) {
-			const auto& val = reader._projectFile["maxthreads"];
+		// Apply maxconcurrentFiles if present and valid.
+		if (reader._projectFile.contains("maxconcurrentfiles")) {
+			const auto& val = reader._projectFile["maxconcurrentfiles"];
 
 			if (const int* i = std::get_if<int>(&val)) {
 				if (*i >= 0 && *i <= 255)
-					reader._maxThreads = static_cast<uint8_t>(*i);
+					reader._maxConcurrentFiles = static_cast<uint8_t>(*i);
 				else
-					oserror << "Error: 'maxthreads' value " << *i
+					oserror << "Error: 'maxconcurrentfiles' value " << *i
 					<< " is out of range (0-255)." << std::endl;
 			}
 			else if (const std::string* s = std::get_if<std::string>(&val)) {
-				oserror << "Error: 'maxthreads' value (" << *s
+				oserror << "Error: 'maxconcurrentfiles' value (" << *s
 					<< ") is not a valid integer." << std::endl;
 			}
 		}

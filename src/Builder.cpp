@@ -7,6 +7,7 @@
 
 #include "tool/Logger.h"
 #include "tool/StringFunctions.h"
+#include "tool/TextParser.h"
 
 #include <chrono>
 #include <filesystem>
@@ -61,29 +62,30 @@ namespace xmc
 		const ProjectFileReader& project,
 		const std::string& fileFilter)
 	{
-		// "sources" in the project file is a whitespace/semicolon-delimited list
-		// of .xm file paths or glob patterns relative to the project directory.
-		std::string sourcesValue = project.GetString("sources", "");
-		if (sourcesValue.empty())
-		{
-			oserror << "Project file is missing a 'sources' key.\n";
-			throw std::runtime_error("No sources defined in project file.");
-		}
+		// Project-file syntax for sources is the same bracketed-list convention
+		// used by libpaths/staticlibs/etc.: [a.xm, b/*.xm, c.xm]. Bare entries
+		// (no brackets) are also accepted -- TextParser's leading Skip eats
+		// them transparently.
+		std::string raw = project.GetString("sources", "[*.xm]");
 
-		// Split on whitespace and semicolons
 		std::vector<std::string> entries;
-		std::string token;
-		for (char c : sourcesValue)
 		{
-			if (c == ' ' || c == '\t' || c == ';' || c == '\n' || c == '\r')
-			{
-				if (!token.empty()) { entries.push_back(token); token.clear(); }
-			}
-			else token += c;
-		}
-		if (!token.empty()) entries.push_back(token);
+			TextParser p(raw);
+			p.Skip(" \t\r\n[");
 
-		// Expand any glob entries; keep plain paths as-is
+			while (!p.Empty() && !p.CheckFor(']'))
+			{
+				auto [item, delim] = p.ReadUntil(",]", false);
+				std::string_view trimmed = lrtrim(item, " \t\r\n\"");
+				if (!trimmed.empty())
+					entries.emplace_back(trimmed);
+
+				if (delim == ',') p.Skip(",");
+				p.Skip(" \t\r\n");
+			}
+		}
+
+		// Expand any glob entries; keep plain paths as-is.
 		std::vector<std::string> allFiles;
 		for (const auto& entry : entries)
 		{
@@ -104,7 +106,7 @@ namespace xmc
 			}
 		}
 
-		// Apply the command-line file filter if present
+		// Apply command-line file filter, if any.
 		if (fileFilter.empty()) return allFiles;
 
 		std::vector<std::string> filtered;
@@ -142,9 +144,7 @@ namespace xmc
 	// -------------------------------------------------------------------------
 	// Build
 	// -------------------------------------------------------------------------
-	void Builder::Build(
-		const CommandLineReader::Args& args,
-		const ProjectFileReader& project)
+	void Builder::Build(const CmdLineArgs& args, const ProjectFileReader& project)
 	{
 		auto allFiles = ResolveSourceFiles(project, args.FileFilter);
 		if (allFiles.empty())
@@ -166,21 +166,20 @@ namespace xmc
 		std::vector<CompileJob> jobs;
 
 		auto makeJob = [&](const std::vector<std::string>& files, const std::string& stem) -> CompileJob
-			{
-				CompileJob job;
-				job.SourceFiles = files;
-				job.IntDir = intDir;
-				job.ObjPath = (fs::path(outDir) / (stem + ".obj")).string();
-				job.ExePath = (fs::path(outDir) / (stem + ".exe")).string();
-				job.Full = args.Full;
-				job.InjectTestMain = args.Test;
-				job.TestFilter = args.TestFilter;
-				job.LexerLog = ResolveLogPath(project, "lexerlog", intDir, stem, ".lexer");
-				job.ParserLog = ResolveLogPath(project, "parserlog", intDir, stem, ".parser");
-				job.TyperLog = ResolveLogPath(project, "typerlog", intDir, stem, ".typer");
-				job.RefinerLog = ResolveLogPath(project, "refinerlog", intDir, stem, ".refiner");
-				return job;
-			};
+		{
+			CompileJob job;
+			job.SourceFiles = files;
+			job.IntDir = intDir;
+			job.ObjPath = (fs::path(outDir) / (stem + ".obj")).string();
+			job.ExePath = (fs::path(outDir) / (stem + ".exe")).string();
+			job.Full = args.Full;
+			job.InjectTestMain = args.Test;
+			job.TestFilter = args.TestFilter;
+			job.LexerLog = (bool)project.GetInt("lexerlog");
+			job.ParserLog = (bool)project.GetInt("parserlog");
+			job.MorpherLog = (bool)project.GetInt("morpherlog");
+			return job;
+		};
 
 		if (perFile || args.Test || args.Suite)
 		{
@@ -213,10 +212,10 @@ namespace xmc
 				continue;  // try remaining jobs, report at end
 			}
 
-			auto linkStart = std::chrono::high_resolution_clock::now();
-			Linker::Link(job, project);
-			auto linkEnd = std::chrono::high_resolution_clock::now();
-			totalLink += std::chrono::duration<double>(linkEnd - linkStart).count();
+			//auto linkStart = std::chrono::high_resolution_clock::now();
+			//Linker::Link(job, project);
+			//auto linkEnd = std::chrono::high_resolution_clock::now();
+			//totalLink += std::chrono::duration<double>(linkEnd - linkStart).count();
 		}
 
 		if (!anyError)

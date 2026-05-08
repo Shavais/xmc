@@ -36,7 +36,7 @@ namespace xmc
 	{
 		SymbolShard           shards[256];
 		std::atomic<uint32_t> nextScopeId{ 1 };
-		uint32_t              maxDepth;
+		uint32_t              maxDepth = SYMBOL_MAX_DEPTH;
 	};
 
 	// ------------------------------------------------------------------
@@ -53,18 +53,6 @@ namespace xmc
 			h *= 1099511628211ull;
 		}
 		return h;
-	}
-
-	// Arena.h aligns to 8. Symbol needs 64. Until Arena grows a native
-	// aligned-allocate, we over-allocate and round up. Wastes up to 63
-	// bytes per Symbol; ~32 on average. Move this into Arena when
-	// convenient — see note at bottom of file.
-	static void* AllocateAligned(Arena& arena, size_t size, size_t align)
-	{
-		void* raw = arena.Allocate(size + align - 1);
-		uintptr_t p = reinterpret_cast<uintptr_t>(raw);
-		uintptr_t aligned = (p + (align - 1)) & ~(uintptr_t)(align - 1);
-		return reinterpret_cast<void*>(aligned);
 	}
 
 	// ------------------------------------------------------------------
@@ -116,7 +104,7 @@ namespace xmc
 
 		std::unique_lock wl(shard.mtx);
 
-		void* mem = AllocateAligned(shard.arena, sizeof(Symbol), alignof(Symbol));
+		void* mem = shard.arena.Allocate(sizeof(Symbol));
 		Symbol* sym = new (mem) Symbol();
 		sym->name = iname;
 		sym->pathLen = static_cast<uint8_t>(pathLen);

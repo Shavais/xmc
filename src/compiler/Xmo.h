@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,7 +17,7 @@
 
 namespace xmc
 {
-	struct  CompileJob;
+	struct CompileJob;
 	struct ParseTreeNode;
 
 	// -----------------------------------------------------------------
@@ -24,16 +25,24 @@ namespace xmc
 	//
 	// Lifecycle of an Xmo slot within one CompileJob.
 	//
-	//   Empty        -- slot reserved by LoadXmos, not yet populated.
+	//   Empty        -- slot reserved by Compiler, not yet populated.
 	//   HeadersOnly  -- exports/scopes/observer graph deserialized from
 	//                   disk; parse tree NOT loaded. Incremental build
-	//                   default for unmodified files.
-	//   Full         -- everything loaded, including parse tree. Used
-	//                   after a RefinementBreakOut triggers parse-tree
-	//                   load for observer xmos.
-	//   Modified     -- source was newer than .xmo; parser/typer/refiner
-	//                   are producing fresh content this session.
-	//   Regenerating -- transient state during InferenceBreakOut recovery.
+	//                   default for unmodified files. The .xmo file
+	//                   mapping is NOT retained -- LoadFrom unmaps
+	//                   before returning. LoadParseTree re-maps if the
+	//                   ParseTreeScanRequired recovery path needs the
+	//                   parse tree.
+	//   Full         -- everything loaded, including parse tree (in
+	//                   arena). Used after a ParseTreeScanRequired
+	//                   break-out triggers parse-tree load for observer
+	//                   xmos.
+	//   Modified     -- source was newer than .xmo; parser/morpher are
+	//                   producing fresh content this session. The .xm
+	//                   file mapping for this xmo is held by the
+	//                   per-file pipeline task on its stack, not on the
+	//                   Xmo, and is dropped when the task finishes.
+	//   Regenerating -- transient state during ReparseRequired recovery.
 	//                   Content is being torn down; consumers must not
 	//                   read parse tree, code buffer, or symbol fields.
 	//   LoadFailed   -- .xmo mapping or deserialization failed. Error
@@ -130,17 +139,6 @@ namespace xmc
 		uint8_t  blockType;
 	};
 
-	// Platform-neutral handle for a memory-mapped xmo file. Implementation
-	// lives in Xmo.cpp and uses the win32 mapping APIs via pch/win32.h.
-	struct FileMapping
-	{
-		void* base = nullptr;
-		uint64_t size = 0;
-		void* handle = nullptr;   // OS handle, opaque to callers
-
-		bool IsMapped() const { return base != nullptr; }
-	};
-
 	// -----------------------------------------------------------------
 	// Xmo
 	//
@@ -148,14 +146,22 @@ namespace xmc
 	// vector<unique_ptr<Xmo>>; self-index stored in `index` for
 	// cross-referencing from Symbols (Symbol::xmoIdx).
 	//
+	// Holds no file mappings: .xm bytes belong to the per-file pipeline
+	// task that's compiling this xmo, .xmo bytes belong to whatever
+	// load function is currently reading from disk. Both kinds of
+	// mapping live on stack frames and are released when the work that
+	// needs them finishes. The Xmo itself only owns its parsed/computed
+	// state.
+	//
 	// Not arena-allocated -- the class holds vectors, a map, a string,
-	// and an Arena-by-value, all of which need real destruction.
+	// and an Arena-by-value, all of which need real destruction. The
+	// compiler-generated destructor is sufficient; no resource cleanup
+	// is required beyond what the member destructors do.
 	// -----------------------------------------------------------------
 	class Xmo
 	{
 	public:
 		Xmo() = default;
-		~Xmo();
 
 		Xmo(const Xmo&) = delete;
 		Xmo& operator=(const Xmo&) = delete;
@@ -169,20 +175,25 @@ namespace xmc
 		bool WriteTo(const std::filesystem::path& outPath,
 			CompileJob& job) const;
 
-		// Memory-maps inPath and deserializes into this xmo. If
-		// loadParseTree is false, the state ends up as HeadersOnly;
-		// otherwise Full. Symbol interning uses `symbols`. Returns
-		// false on any failure, leaving state == LoadFailed and an
-		// error reported to `job`.
+		// Maps inPath, deserializes headers (and optionally the parse
+		// tree) into this xmo's owned containers, and unmaps before
+		// returning. If loadParseTree is false, the state ends up as
+		// HeadersOnly; otherwise Full. Symbol interning uses `symbols`.
+		// Returns false on any failure, leaving state == LoadFailed
+		// and an error reported to `job`.
 		bool LoadFrom(const std::filesystem::path& inPath,
 			SymbolTable& symbols,
 			CompileJob& job,
 			bool         loadParseTree);
 
-		// Loads just the parse tree for an Xmo that was previously
-		// loaded in HeadersOnly state. Advances state Full.
-		// Used by RefinementBreakOut recovery.
-		bool LoadParseTree(SymbolTable& symbols, CompileJob& job);
+		// Loads just the parse tree for an Xmo previously loaded in
+		// HeadersOnly state. Re-maps inPath, walks the parse-tree
+		// section, rebuilds it into this->arena, and unmaps before
+		// returning. Advances state to Full on success. Used by
+		// ParseTreeScanRequired recovery.
+		bool LoadParseTree(const std::filesystem::path& inPath,
+			SymbolTable& symbols,
+			CompileJob& job);
 
 		// -------------------------------------------------------------
 		// Break-out recovery
@@ -191,7 +202,7 @@ namespace xmc
 		// Resets inferred fields on every Symbol this xmo owns
 		// (baseType = 0, minrmask = 0, maxrmask = 0xFF). The Symbol
 		// objects themselves stay valid; only their inferred contents
-		// are cleared. Called by the InferenceBreakOut handler before
+		// are cleared. Called by the ReparseRequired handler before
 		// re-parsing this xmo from source.
 		void ResetSymbolsForRegeneration();
 
@@ -205,9 +216,9 @@ namespace xmc
 		// -------------------------------------------------------------
 		// Dependency graph mutation
 		//
-		// These are called during Parser/Typer as references and
-		// exports are discovered. All three take shard/xmo locks as
-		// needed; safe to call from any worker thread.
+		// These are called during Parser/Morpher as references and
+		// exports are discovered. All take the per-Xmo shared_mutex
+		// as needed; safe to call from any worker thread.
 		// -------------------------------------------------------------
 
 		// Records that this xmo imports `symbol` from `originXmoName`.
@@ -252,11 +263,10 @@ namespace xmc
 		std::vector<XmoScope>      scopeTree;
 		ParseTreeNode* parseTree = nullptr; // into arena
 		uint32_t                   tempGlobalOffset = 0;
-		FileMapping                mapping;
 
 		// Back-reference: symbols declared in this xmo. Non-owning;
 		// SymbolTable owns the Symbol objects. Populated by
-		// Parser/Typer as they intern symbols for this xmo. Used by
+		// Parser/Morpher as they intern symbols for this xmo. Used by
 		// ResetSymbolsForRegeneration and by export-table generation
 		// during WriteTo.
 		std::vector<Symbol*> ownedSymbols;

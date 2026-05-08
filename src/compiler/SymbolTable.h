@@ -1,4 +1,4 @@
-// compiler/SymbolTable.h
+ï»¿// compiler/SymbolTable.h
 #pragma once
 
 #include <atomic>
@@ -38,9 +38,9 @@ namespace xmc
 		{
 			// Fast rejects: different hash or length.
 			if (a.hash != b.hash || a.len != b.len) return false;
-			// Same pointer means same interned string — skip memcmp.
+			// Same pointer means same interned string ï¿½ skip memcmp.
 			if (a.str == b.str) return true;
-			// Hash collision with different pointers — fall back to content.
+			// Hash collision with different pointers ï¿½ fall back to content.
 			return std::memcmp(a.str, b.str, a.len) == 0;
 		}
 	};
@@ -51,10 +51,21 @@ namespace xmc
 	// namespace member, ...). Lives for the entire compile job.
 	// baseType, minrmask, and maxrmask are atomic because Typer and
 	// Refiner mutate them concurrently across source files.
+	//
+	// The struct is laid out for clarity, not for cache-line packing.
+	// An earlier revision pinned Symbol to 64 bytes via alignas(64) and
+	// constrained inline scope-path storage to keep it that way; the
+	// constraint forced the type system to bifurcate (pointerDepth /
+	// isArray on the parse node, not the Symbol), which cost more in
+	// downstream code clarity than the cache-line win was worth at this
+	// stage of the project. If profiling later shows Symbol-touching
+	// loops are hot, revisit -- but the layout change is mechanical
+	// because none of these fields cross the .xmo serialized boundary.
 	// ----------------------------------------------------------------------
-    // Inline path capacity. Fixed at compile time to keep Symbol = 64 bytes.
-    // Projects that need deeper nesting spill to arena-allocated overflow.
-	static constexpr uint32_t SYMBOL_INLINE_DEPTH = 5;
+
+	// Inline path capacity. Generous default; overflow path is allocated
+	// when a project legitimately nests deeper.
+	static constexpr uint32_t SYMBOL_INLINE_DEPTH = 8;
 
 	// Hard ceiling on what a project file can request. Guards against
 	// typos in the project file turning into absurd allocations.
@@ -64,7 +75,7 @@ namespace xmc
 	// Symbol (the arena path via `new (mem) Symbol()`) starts with no xmo.
 	static constexpr uint32_t NO_XMO = 0xFFFFFFFFu;
 
-	struct alignas(64) Symbol
+	struct Symbol
 	{
 		InternedString        name;        // 24
 		uint32_t              xmoIdx;      //  4   index into Compiler::xmos
@@ -75,9 +86,16 @@ namespace xmc
 		AllocationType        allocType;   //  1
 		uint8_t               pathLen;     //  1
 
-		// 20 bytes of path storage. For pathLen <= SYMBOL_INLINE_DEPTH the
-		// inline array is live; otherwise overflow_path points at arena
-		// memory holding `pathLen` u32s.
+		// Type shape that doesn't fit in baseType alone. Plain (non-atomic)
+		// because they're written once at declaration time before the
+		// Symbol becomes visible to other threads via the subscriber index;
+		// the atomic store of baseType serves as the release that publishes
+		// these to readers.
+		uint8_t               pointerDepth;//  1   leading '*' count
+		bool                  isArray;     //  1   trailing "[]"
+
+		// Inline path storage; spills to overflow_path when pathLen
+		// exceeds SYMBOL_INLINE_DEPTH.
 		union {
 			uint32_t  inline_path[SYMBOL_INLINE_DEPTH];
 			uint32_t* overflow_path;
@@ -91,6 +109,8 @@ namespace xmc
 			maxrmask(0xFF),
 			allocType(AllocationType::Stack),
 			pathLen(0),
+			pointerDepth(0),
+			isArray(false),
 			inline_path{} {
 		}
 
@@ -105,9 +125,6 @@ namespace xmc
 		uint32_t InnermostScope() const { return pathLen ? Path()[pathLen - 1] : 0; }
 		uint32_t FileScope()      const { return pathLen ? Path()[0] : 0; }
 	};
-
-	static_assert(sizeof(Symbol) == 64, "Symbol must be exactly one cache line");
-	static_assert(alignof(Symbol) == 64, "Symbol must be cache-line aligned");
 
 	struct SymbolKey
 	{

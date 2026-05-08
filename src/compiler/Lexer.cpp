@@ -2,14 +2,17 @@
 // Table-driven lexer for .xm source files.
 // BNF reference: xcm_06.bnf
 
-#include "pch.h"
+#include "pch/pch.h"
 #include "Lexer.h"
 
 #include <cassert>
 #include <cstring>
 #include <iomanip>
+#include <filesystem>
 #include <mutex>
 #include <unordered_map>
+
+namespace fs = std::filesystem;
 
 namespace xmc {
 
@@ -697,11 +700,11 @@ namespace xmc {
 	const char* Lexer::TokenTypeName(TokenType tt)
 	{
 		switch (tt) {
-		case T::LIT_INTEGER:            return "INTEGER_LITERAL";
-		case T::LIT_FLOAT:              return "FLOAT_LITERAL";
-		case T::LIT_DECIMAL:            return "DECIMAL_LITERAL";
-		case T::LIT_STRING:             return "STRING_LITERAL";
-		case T::LIT_CHAR:               return "CHAR_LITERAL";
+		case T::LIT_INTEGER:            return "LIT_INTEGER";
+		case T::LIT_FLOAT:              return "LIT_FLOAT";
+		case T::LIT_DECIMAL:            return "LIT_DECIMAL";
+		case T::LIT_STRING:             return "LIT_STRING";
+		case T::LIT_CHAR:               return "LIT_CHAR";
 		case T::IDENTIFIER:             return "IDENTIFIER";
 		case T::UGLY_MASK:              return "UGLY_MASK";
 			// Primitive types
@@ -862,16 +865,9 @@ namespace xmc {
 	// Lexer::Lex
 	// ============================================================================
 
-	Lexer::Result Lexer::Lex(
-		std::string_view                    filename,
-		std::string_view                    source,
-		moodycamel::ConcurrentQueue<Token>& parserQueue,
-		std::ostream* logStream) const
+	void Lexer::Lex(std::string_view filename, std::string_view source, xmc::PipelineQueue<Token>& parserQueue, bool writeLog)
 	{
 		InitTables();
-
-		Result result;
-		result.tokens.reserve(source.size() / 4);
 
 		const char* src = source.data();
 		const uint32_t srcLen = (uint32_t)source.size();
@@ -888,6 +884,10 @@ namespace xmc {
 		std::string buf;
 		buf.reserve(128);
 
+		fs::path srcPath(filename);
+		fs::path logPath = srcPath.parent_path() / (srcPath.stem().string() + ".lexer.txt");
+		std::ofstream logStream(logPath);
+
 		// Emit one token and optionally write a log line.
 		auto EmitToken = [&](T tt, uint32_t start, uint32_t end,
 			uint32_t tLine, uint32_t tCol)
@@ -901,19 +901,13 @@ namespace xmc {
 				tok.flags = hadSpace ? Token::FLAG_PRECEDED_BY_SPACE : 0;
 				hadSpace = false;
 
-				result.tokens.push_back(tok);
-				if (IsParserToken(tt))
-					parserQueue.enqueue(tok);
-				if (tt == T::TOK_ERROR)
-					result.hadErrors = true;
+				if (IsParserToken(tt)) parserQueue.Enqueue(std::move(tok));
 
-				if (logStream) {
+				if (writeLog) {
 					// Format: "filename:line:col" padded to 24, then token type
 					// padded to 24, then raw source text.
-					std::string pos = std::string(filename) + ":"
-						+ std::to_string(tLine) + ":"
-						+ std::to_string(tCol);
-					*logStream
+					std::string pos = std::string(filename) + ":" + std::to_string(tLine) + ":" + std::to_string(tCol);
+					logStream
 						<< std::left << std::setw(24) << pos
 						<< std::setw(24) << TokenTypeName(tt)
 						<< source.substr(start, end - start)
@@ -1016,15 +1010,6 @@ namespace xmc {
 
 			if (stop) break;
 		}
-
-		// Safety: ensure the queue always ends with TOK_EOF even if the
-		// source was empty or the loop exited without emitting one.
-		if (result.tokens.empty() || result.tokens.back().type != T::TOK_EOF) {
-			EmitToken(T::TOK_EOF, srcLen, srcLen, line,
-				srcLen >= lineStart ? (srcLen - lineStart + 1) : 1);
-		}
-
-		return result;
 	}
 
 } // namespace xmc

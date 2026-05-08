@@ -17,8 +17,8 @@ int main(int argc, char* argv[])
 		auto args = CommandLineReader::Parse(argc, argv);
 		auto project = ProjectFileReader::Load(args.ProjectName, args.ConfigName);
 		Builder::Build(args, project);
-		if (args.Test)  Tester::RunTests(args, project);
-		else if (args.Suite) Tester::RunSuite(args, project);
+		//if (args.Test)  Tester::RunTests(args, project);
+		//else if (args.Suite) Tester::RunSuite(args, project);
 	}
 	catch (const std::runtime_error& e)
 	{

@@ -24,7 +24,7 @@ namespace xmc
 			<< "  test_filter   wildcard matched against test block names (namespace paths use ':')\n";
 	}
 
-	CommandLineReader::Args CommandLineReader::Parse(int argc, char* argv[])
+	CmdLineArgs CommandLineReader::Parse(int argc, char* argv[])
 	{
 		if (argc < 2)
 		{
@@ -32,7 +32,7 @@ namespace xmc
 			throw std::runtime_error("No arguments provided.");
 		}
 
-		Args args;
+		CmdLineArgs args;
 
 		// First pass: resolve flags so we know how to interpret positionals.
 		for (int i = 1; i < argc; ++i)

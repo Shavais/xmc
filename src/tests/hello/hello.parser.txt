@@ -1,0 +1,51 @@
+.\hello.xm:3:1          File
+.\hello.xm:3:1            ExternDecl  kernel32:WriteFile
+.\hello.xm:4:2              ParamList
+.\hello.xm:4:2                Param  handle : rcx
+.\hello.xm:4:17                 Type  *u8
+.\hello.xm:5:2                Param  buffer : rdx
+.\hello.xm:5:17                 Type  *u8
+.\hello.xm:6:2                Param  bytesToWrite : r8
+.\hello.xm:6:16                 Type  u32
+.\hello.xm:7:2                Param  bytesWritten : r9
+.\hello.xm:7:17                 Type  *u32
+.\hello.xm:8:2                Param  overlapped
+.\hello.xm:8:17                 Type  *u8
+.\hello.xm:9:2              ReturnSpec  : rax
+.\hello.xm:9:4                Type  b
+.\hello.xm:11:1           ExternDecl  kernel32:GetStdHandle
+.\hello.xm:12:2             ParamList
+.\hello.xm:12:2               Param  stdHandleId : rcx
+.\hello.xm:12:15                Type  i32
+.\hello.xm:13:3             ReturnSpec  : rax
+.\hello.xm:13:5               Type  *u8
+.\hello.xm:15:1           ExternDecl  kernel32:ExitProcess
+.\hello.xm:16:2             ParamList
+.\hello.xm:16:2               Param  exitCode : rcx
+.\hello.xm:16:12                Type  u32
+.\hello.xm:20:5           FuncDecl  main
+.\hello.xm:20:1             Type  i32
+.\hello.xm:20:10            ParamList
+.\hello.xm:20:12            Block
+.\hello.xm:21:6               VarDecl  h
+.\hello.xm:21:2                 Type  u64
+.\hello.xm:21:22                Call
+.\hello.xm:21:10                  Ident  GetStdHandle
+.\hello.xm:21:22                  ArgList
+.\hello.xm:21:23                    IntLit  0xFFFFFFF5  (=4294967285)
+.\hello.xm:23:7               VarDecl  msg
+.\hello.xm:23:2                 Type  u8[]
+.\hello.xm:23:13                StringLit  "Hello, world!\n"
+.\hello.xm:24:7               VarDecl  written
+.\hello.xm:24:2                 Type  u64
+.\hello.xm:26:2               ExprStmt
+.\hello.xm:26:11                Call
+.\hello.xm:26:2                   Ident  WriteFile
+.\hello.xm:26:11                  ArgList
+.\hello.xm:26:12                    Ident  h
+.\hello.xm:26:15                    Ident  msg
+.\hello.xm:26:23                    MemberAccess  length
+.\hello.xm:26:20                      Ident  msg
+.\hello.xm:26:32                    AddressOf  OP_AMP
+.\hello.xm:26:33                      Ident  written
+.\hello.xm:26:42                    NullLit

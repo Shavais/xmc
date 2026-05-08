@@ -33,9 +33,9 @@ namespace xmc
 		const std::string& OutDir()  const { return _outdir; }
 		const std::string& OutFile() const { return _outfile; }
 
-		// Thread cap read from the "maxthreads" key (0 = unlimited, 1-255 = cap).
+		// Thread cap read from the "maxconcurrentFiles" key (0 = unlimited, 1-255 = cap).
 		// Defaults to 6 if the key is absent or invalid.
-		uint8_t MaxThreads() const { return _maxThreads; }
+		uint8_t MaxConcurrentFiles() const { return _maxConcurrentFiles; }
 
 	private:
 		ProjectFileReader() = default;
@@ -52,7 +52,7 @@ namespace xmc
 		std::string _intdir = ".";
 		std::string _outdir = ".";
 		std::string _outfile;
-		uint8_t     _maxThreads = 6;
+		uint8_t     _maxConcurrentFiles = 6;
 	};
 
 } // namespace xmc

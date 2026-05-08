@@ -170,7 +170,7 @@ Project file keys used by the current implementation:
     ParserLog    0 | 1 | <dir path>
     TyperLog     0 | 1 | <dir path>
     RefinerLog   0 | 1 | <dir path>
-    MaxThreads   0 = unlimited, 1-255 = cap (default 6)
+    MaxConcurrentFiles   0 = unlimited, 1-255 = cap (default 6)
 
 
 === Compiler architecture (post-refactor) ===
