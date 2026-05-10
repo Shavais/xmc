@@ -1,5 +1,6 @@
 ; xmc Language Grammar (Tentative BNF, Revision 1.7)
 ;===================================================
+;
 ; Notation:
 ;   ::=      definition
 ;   |        alternate
@@ -10,6 +11,8 @@
 ;   < >      whitespace is not allowed between groups of items surrounded by angle brackets
 ;            (whitespace is allowed before and after such groups)
 ;   UPPER    lexer token (defined in the Tokens section at the bottom)
+; 
+;----------------------------------------------------
 ;
 ; Dot vs Colon (Key Decision #11): The dot "." always operates on a value;
 ; the colon ":" always operates on a scope or names a relationship between
@@ -60,7 +63,6 @@ top-level-declaration
 
 arena-declaration
     ::= "arena" IDENTIFIER [ "(" expression ")" ] ";"
-    | [ "arena" | "var" ] IDENTIFIER "=" "arena" [ "(" expression ")" ] ";"
 
 ;============================================================================
 ; CLASS DECLARATIONS
@@ -170,9 +172,8 @@ base-type
     | "zs8" | "zs16" | "zs32"
     | "s8" | "s16"
     | "utf8" | "us"
-    | "Class"                     ; built-in type produced by typeof(); section 12f
-    | container-type
-    | generic-type                ; parameterized: array<T>, list<T>, Generator<T>, ...
+    | "Class"
+    | generic-type
     | "arena"
     | "heap"
 
@@ -424,7 +425,7 @@ if-statement
 
 for-statement
     ::= "for" "(" for-init ";" [ expression ] ";" [ expression ] ")" statement
-    | "for" "(" [ "var" | type-specifier ] for-bind-target "in" expression ")" statement
+    | "for" "(" [ type-specifier ] for-bind-target "in" expression ")" statement
 
 for-init
     ::= variable-declaration
@@ -449,7 +450,7 @@ while-statement
 
 while-cond
     ::= expression
-    | ( "var" | type-specifier ) IDENTIFIER "=" expression
+    | type-specifier IDENTIFIER "=" expression
 
 do-statement
     ::= "do" statement "while" "(" expression ")" ";"
@@ -486,7 +487,7 @@ switch-statement
 
 switch-key
     ::= expression
-    | ( "var" | type-specifier ) IDENTIFIER "=" expression
+    | type-specifier IDENTIFIER "=" expression
 
 switch-case
     ::= case-label ":" case-body
@@ -519,7 +520,7 @@ labeled-block
 ;----------------------------------------------------------------------------
 
 spawn-statement
-    ::= [ ( "var" | "ref" | type-specifier ) IDENTIFIER "=" ] "spawn"
+    ::= [ type-specifier IDENTIFIER "=" ] "spawn"
     ( function-call | anonymous-block ) ";"
 
 anonymous-block
@@ -688,8 +689,7 @@ postfix-op
     ::= "." IDENTIFIER
     | <"->"> <IDENTIFIER>                     ; dereference and access member
     | "[" expression "]"                       ; subscript
-    | "[" [ expression ] ":" [ expression ] "]" ; slice
-    | "[" [ expression ] ":" [ expression ] ":" [ expression ] "]" ; slice with stride
+    | "[" [ expression ] ":" [ expression ] [ ":" [ expression ] ] "]"
     | "(" [ argument-list ] ")"               ; call
     | "++"
     | "--"
@@ -818,11 +818,11 @@ argument
 ; rmasks and lets usage drive subsequent morphing.
 
 list-comprehension
-    ::= "[" expression "for" [ "var" | type-specifier ] for-bind-target
+    ::= "[" expression "for" [ type-specifier ] for-bind-target
     "in" expression [ "if" expression ] "]"
 
 dict-comprehension
-    ::= "{" expression ":" expression "for" [ "var" | type-specifier ] for-bind-target
+    ::= "{" expression ":" expression "for" [ type-specifier ] for-bind-target
     "in" expression [ "if" expression ] "}"
 
 range-expression
@@ -1045,7 +1045,7 @@ use-directive
 ; "var" declares a variable that infers its type and may continue to morph.
 
 variable-declaration
-    ::= [ "once" ] { low-refinement-qualifier } ( "var" | "ref" | type-specifier ) <IDENTIFIER> { array-suffix } [ <UGLY-MASK> ] [ ":" vault-specifier ]
+    ::= [ "once" ] { low-refinement-qualifier } type-specifier <IDENTIFIER> { array-suffix } [ <UGLY-MASK> ] [ ":" vault-specifier ]
     [ ( "=" expression | ":=" lvalue-expression ) ] ";"
 
 ; The bracket-suffix form (i32 a[5]) attaches the array size to the variable,
@@ -1072,10 +1072,10 @@ lvalue-expression
     ::= lvalue-root { lvalue-postfix }
 
 lvalue-root
-    ::= IDENTIFIER
+    ::= qualified-name
     | function-call
-    | <"$"> <unary-expr>    ; dereferenced pointer is an addressable location
-    | "(" expression ")"
+    | "$" lvalue-expression
+    | "(" lvalue-expression ")"
 
 lvalue-postfix
     ::= "." IDENTIFIER

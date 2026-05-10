@@ -353,6 +353,7 @@ namespace xmc {
 		SetTrans(S::Start, C::Dot, S::Start, A::EmitA, T::PUNCT_DOT);
 		SetTrans(S::Start, C::At, S::Start, A::EmitA, T::OP_AT);
 		SetTrans(S::Start, C::Dollar, S::Start, A::EmitA, T::OP_DOLLAR);
+		
 		// ~ in Start (expression context, not after identifier) is bitwise NOT
 		SetTrans(S::Start, C::Tilde, S::Start, A::EmitA, T::OP_TILDE);
 
@@ -964,7 +965,7 @@ namespace xmc {
 				advance = false;
 				break;
 
-				// ---- EmitKwR: keyword-check emit, reconsume ---------------------
+			// ---- EmitKwR: keyword-check emit, reconsume ---------------------
 			case A::EmitKwR: {
 				auto it = s_keywords.find(buf);
 				T    kwTt = (it != s_keywords.end()) ? it->second : T::IDENTIFIER;
@@ -975,16 +976,15 @@ namespace xmc {
 				break;
 			}
 
-						   // ---- TransR: state change only, reconsume -----------------------
+			// ---- TransR: state change only, reconsume -----------------------
 			case A::TransR:
 				advance = false;
 				break;
 
-				// ---- Error: accumulate, emit TOK_ERROR, advance ----------------
+			// ---- Error: accumulate, emit TOK_ERROR, advance ----------------
 			case A::Error:
 				if (ch != 0) buf += (char)ch;
-				EmitToken(T::TOK_ERROR, tokStart, ch ? i + 1 : i,
-					tokLine, tokCol);
+				EmitToken(T::TOK_ERROR, tokStart, ch ? i + 1 : i, tokLine, tokCol);
 				buf.clear();
 				next = S::Start;
 				resetTokStart = true;

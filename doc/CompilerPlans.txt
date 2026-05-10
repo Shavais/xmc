@@ -91,3 +91,80 @@ that recently added functionality hasn't broken anything. Maybe those are all in
 A third type of testing that it would be nice to facilitate are application tests that a programmer puts into their program that they
 can call out individually or as a whole.
 
+
+-----------------------------
+5/9/2026
+
+- New Plan
+
+I want to avoid recursive descent style code. Having a function per production is too much code and too much thrashing of the stack.
+
+Also, I'm suspicious that the threading model is a little bit over-threaded. A little bit too much sleeping on blocking queues.
+
+Also, we're having a lot of trouble with the DFA -> LALR notion, I think probably because the node tree shape we seem to be intending to produce doesn't match 
+the node tree shape naturally present in the BNF closely enough.
+
+So, I have a slightly different idea for how to approach the compiler. It's evolutionary, not revolutionary, but I think it is a rewrite, or at least 
+a substantial refactor. It might be essentially the same, but in my mind it is a bit different.
+
+- The BNF shape is the parse tree shape
+
+The non-terminal nodes in the BNF can be parse nodes in our parse tree, except that collections of tokens (such as numeric values) are collapsed into noun values.
+
+We'll drive the compiler from the lexer. It'll have a big StringView (a struct with a "start" index and an "end" index that we locate in a CompileJob arena) that 
+covers an entire source file (whose contents we have in a byte buffer called source). In the course of what it does, it'll create a StringView per non-terminal node. 
+We'll have a current StringView that we're working with. 
+
+We'll have a NestState table that looks like this:
+
+[state: {nextchars: nextChars, nextStates: {Char: {nextstate: {action, nodekind, basetype, usertype, minrmask, maxrmask, LCR, consume}, ..}, ..}, ..}, ..]
+
+where..
+
+const char* nextchars;
+uint16_t state;
+char Char;
+uint16_t nextstate;
+uint16_t action;
+uint16_t nodekind;
+uint8_t basetype;
+uint32_t usertype;
+uint8_t minrmask;
+uint8_t maxrmask;
+int8_t LCR;
+int8_t consume;
+
+The Lexer starts (in a thread pool task for the file being compiled) with currentState = ST_START. 
+It has a currentStringView which, after initialization, covers the entire source buffer: start = 0, end = length.
+It begins by calling a Parser::CreateNode function to create node of NodeKind NK_FILE and sets TopNode to that node and currentNode to that node.
+Then it enters the Driver Loop for the whole compiler.
+
+Driver Loop:
+
+Set target to currentStringView.start.
+Look up the NextState entry for currentState, call it nextStateEntry
+Move target forward until source[target] is one of nextchars.
+(let currentChar = source[target])
+Look up currentChar in nextStates to get nextState
+If nextState nodekind is not NK_NONE:
+    call Parser::CreateNode, passing a copy of currentStringView, nodekind, basetype, usertype, minrmask and maxrmask.
+        Parser::CreateNode reports the node creation if ParserLog == 1
+    call Parser::InsertNode, passing a current node reference and a new node reference and LCR. 
+        Parser::InsertNode inserts the node into the parse tree either as a left sibling, a child, or a right sibling.
+        Parser::InsertNode calls Morpher::ProcessNoun if the nodekind is one of the noun nodekinds.
+            Morpher::ProcessNoun spawns a Morpher thread pool task to process the noun as far as it can so far.
+                Morpher::ProcessNoun reports the noune if MorpherLog == 1
+Move the target forward by consume (which might be negative).
+Set currentStringView.start = target
+Set currentState = nextState
+If LexerLog == 1, report the transition
+
+I'm not completely sure, but I think we can construct the Morpher such that by the time the driver loop reaches the end of the file,
+all the right types and masks are propagated to their correct locations in the parse tree.
+
+I'm not sure if we can write a python script to generate the NextState table. Maybe. We might have to hand tune a lot of the values,
+or we might have to alter our BNF so that it conveys enough information to the python script.
+
+We may also need to alter the BNF so that the node tree shape that falls out of it is the node tree shape we want, with operators being parents of LHS and RHS expressions.
+
+Let's chat about this before we do anything. What do you think of this plan? Can it work? Do you think its less efficient? Do you think it can help resolve our DFA -> LALR difficulties?

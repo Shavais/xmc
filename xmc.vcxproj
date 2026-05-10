@@ -146,13 +146,13 @@
     <ClCompile Include="src\builder\Linker.cpp" />
     <ClCompile Include="src\Compiler.cpp" />
     <ClCompile Include="src\compiler\Morpher.cpp" />
+    <ClCompile Include="src\compiler\Parser.cpp" />
     <ClCompile Include="src\compiler\SymbolTable.cpp" />
     <ClCompile Include="src\compiler\Types.cpp" />
     <ClCompile Include="src\compiler\Xmo.cpp" />
     <ClCompile Include="src\ProjectFileReader.cpp" />
     <ClCompile Include="src\CommandLineReader.cpp" />
     <ClCompile Include="src\compiler\Lexer.cpp" />
-    <ClCompile Include="src\compiler\Parser.cpp" />
     <ClCompile Include="src\pch\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -181,6 +181,7 @@
     <ClInclude Include="src\compiler\Arena.h" />
     <ClInclude Include="src\compiler\CodeBlock.h" />
     <ClInclude Include="src\compiler\Emitter.h" />
+    <ClInclude Include="src\compiler\ParseTables.h" />
     <ClInclude Include="src\compiler\PipelineQueue.h" />
     <ClInclude Include="src\compiler\Morpher.h" />
     <ClInclude Include="src\Compiler.h" />
