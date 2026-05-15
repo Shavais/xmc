@@ -34,7 +34,7 @@
 //     refinement morphing (no := assignments, no shared containers,
 //     no concurrency). When a real test introduces them, this is
 //     where the propagation rules get added.
-//   - Conversion-node insertion. Per §6.1 that's the Reviewer's job;
+//   - Conversion-node insertion. Per ï¿½6.1 that's the Reviewer's job;
 //     we just leave operand types as resolved and let the Reviewer
 //     deal with mismatches.
 //   - Cross-file subscriber bookkeeping. hello.xm is one file; until
@@ -389,7 +389,7 @@ namespace xmc
 				MorphExpr(node->children[i]);
 			}
 			// Conformance with the enclosing function's return type
-			// is the Reviewer's responsibility (per §6.1.1).
+			// is the Reviewer's responsibility (per ï¿½6.1.1).
 		}
 
 		void MorpherState::MorphExprStmt(ParseTreeNode* node)
@@ -427,7 +427,7 @@ namespace xmc
 				node->baseType = U(BaseTypeIds::T_F64);
 				break;
 			case ParseKind::StringLit:
-				// "..." is an open array of u8 (per §9 + §28's
+				// "..." is an open array of u8 (per ï¿½9 + ï¿½28's
 				// *u8[] usage on FFI parameters). Treating it as
 				// u8 + isArray=true matches the spelling u8[] of
 				// the variable that holds it in hello.xm.
@@ -801,29 +801,25 @@ namespace xmc
 	// Public entry points
 	// =================================================================
 
-	void Morpher::Morph(
-		Xmo& xmo,
-		PipelineQueue<ParseTreeNode*>& nodeQueue,
-		SymbolTable& symbols,
+	void Morpher::MorphNoun(
+		ParseTreeNode*    node,
+		Xmo&              xmo,
+		SymbolTable&      symbols,
 		const CompileJob& job)
 	{
-		// Drain the streaming queue. The Parser pushes one entry per
-		// leaf and a nullptr sentinel after it finishes; we wait on
-		// the sentinel so the Parser's enqueues don't pile up and to
-		// guarantee xmo.parseTree is set before we walk it (the
-		// Parser sets parseTree before pushing the sentinel).
-		ParseTreeNode* node = nullptr;
-		while (true) {
-			nodeQueue.WaitDequeue(node);
-			if (node == nullptr) break;
-		}
-
-		MorphTree(xmo, symbols, job);
+		// Per-noun stub. The Parser submits this as a fire-and-forget
+		// pool task when it completes a noun node. For now we defer
+		// all real work to MorphTree; individual noun morphing will be
+		// filled in incrementally as tests require it.
+		(void)node;
+		(void)xmo;
+		(void)symbols;
+		(void)job;
 	}
 
 	void Morpher::MorphTree(
-		Xmo& xmo,
-		SymbolTable& symbols,
+		Xmo&              xmo,
+		SymbolTable&      symbols,
 		const CompileJob& job)
 	{
 		if (!xmo.parseTree) return;

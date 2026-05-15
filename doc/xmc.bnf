@@ -318,22 +318,69 @@ error-declaration
 ;============================================================================
 ; EXTERN DECLARATIONS
 ;----------------------------------------------------------------------------
+;
+; extern declarations map external C/ABI functions into xmc by name, parameter
+; types, register bindings, and return type. Because the ABI is fixed by the
+; external callee, extern declarations use a simplified subset of the general
+; type and name syntax — no refinement qualifiers, no arc/var/ref, no generics.
+; Extern-specific metavariables (extern-type-spec, extern-param,
+; extern-qualified-name) are used to avoid conflating this restricted form with
+; the full type-specifier and qualified-name productions.
+;
+; The return type and its optional register binding appear BEFORE the function
+; name, mirroring normal function declaration style. Omitting the return spec
+; declares a void-returning extern.
+;
+; The library qualifier and the function name are separated by ":" in the same
+; way as namespace-qualified names elsewhere, but are limited to exactly one
+; optional qualifier segment followed by the function name. (A full
+; qualified-name would be ambiguous with the return-type:return-register form.)
+;
+; Disambiguation when two colon-separated identifiers precede "(":
+;   - If the next non-whitespace character after the second identifier is "("
+;     → the pair is [qualifier:]funcname and the return type is void.
+;   - Otherwise (next char is an identifier, "*", or whitespace-then-identifier)
+;     → the pair is rettype[:retreg] and a (possibly qualified) function name
+;     follows.
+;
+; Examples:
+;   extern kernel32:ExitProcess(u32:rcx exitCode);
+;   extern u64:rax kernel32:GetStdHandle(i32:rcx stdHandleId);
+;   extern b:rax kernel32:WriteFile(
+;       u64:rcx  handle,
+;       *u8:rdx  buffer,
+;       u32:r8   bytesToWrite,
+;       *u32:r9  bytesWritten,
+;       *u8      overlapped
+;   );
 
 extern-declaration
-    ::= "extern" qualified-name "(" [ extern-parameter-list ] ")"
-    [ "->" type-specifier [ ":" IDENTIFIER ] ] ";"
+    ::= "extern" [ extern-return-spec ] extern-qualified-name "(" [ extern-param-list ] ")" ";"
 
-extern-parameter-list
-    ::= extern-parameter { "," extern-parameter }
+extern-return-spec
+    ::= extern-type-spec [ ":" IDENTIFIER ]
 
-extern-parameter
-    ::= IDENTIFIER "->" type-specifier [ ":" IDENTIFIER ]
+; extern-qualified-name allows at most one "qualifier:" prefix to distinguish
+; the library from the function name. Using the full qualified-name rule here
+; would be ambiguous with return-type:return-register.
 
-; The "-> type : register" form spells the type and its register binding the
-; same way for parameters and for the return. Parameters lead with the name;
-; the return has no name. The register binding is optional in both positions:
-; an extern parameter without ": register" is passed on the stack, and an
-; extern with no return-register clause names a void-returning extern.
+extern-qualified-name
+    ::= [ IDENTIFIER ":" ] IDENTIFIER
+
+extern-param-list
+    ::= extern-param { "," extern-param }
+
+; Parameters follow C-style order: type (with optional register binding) comes
+; before the name. A parameter without a register clause is passed on the stack.
+
+extern-param
+    ::= extern-type-spec [ ":" IDENTIFIER ] IDENTIFIER
+
+; extern-type-spec covers raw pointer types (any depth of leading "*") and
+; plain base-type names. No refinement qualifiers, arc, ref, or generic forms.
+
+extern-type-spec
+    ::= { "*" } IDENTIFIER
 
 ;============================================================================
 ; FUNCTIONS

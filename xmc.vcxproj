@@ -152,7 +152,6 @@
     <ClCompile Include="src\compiler\Xmo.cpp" />
     <ClCompile Include="src\ProjectFileReader.cpp" />
     <ClCompile Include="src\CommandLineReader.cpp" />
-    <ClCompile Include="src\compiler\Lexer.cpp" />
     <ClCompile Include="src\pch\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -181,7 +180,6 @@
     <ClInclude Include="src\compiler\Arena.h" />
     <ClInclude Include="src\compiler\CodeBlock.h" />
     <ClInclude Include="src\compiler\Emitter.h" />
-    <ClInclude Include="src\compiler\ParseTables.h" />
     <ClInclude Include="src\compiler\PipelineQueue.h" />
     <ClInclude Include="src\compiler\Morpher.h" />
     <ClInclude Include="src\Compiler.h" />
@@ -192,7 +190,6 @@
     <ClInclude Include="src\ProjectFileReader.h" />
     <ClInclude Include="src\CommandLineReader.h" />
     <ClInclude Include="deps\include\concurrentqueue.h" />
-    <ClInclude Include="src\compiler\Lexer.h" />
     <ClInclude Include="src\compiler\Parser.h" />
     <ClInclude Include="src\pch\pch.h" />
     <ClInclude Include="src\pch\stl.h" />
@@ -207,6 +204,12 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="doc\xcm_04.bnf" />
+    <!-- rev01: old LALR lexer/parser, kept for reference -->
+    <None Include="src\rev01\Lexer.cpp" />
+    <None Include="src\rev01\Parser.cpp" />
+    <None Include="src\rev01\Parser_RD.cpp" />
+    <None Include="src\rev01\Parser_RD2.cpp" />
+    <None Include="src\rev01\ParseTables.h" />
     <None Include="src\old\tests\xmdev\extern.xm_" />
     <None Include="src\old\tests\xmdev\xmdev.xmc" />
     <None Include="src\old\tests\xmdev\Test01.xm_" />

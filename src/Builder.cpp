@@ -55,17 +55,15 @@ namespace xmc
 		return p == pEnd;
 	}
 
-	// -------------------------------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------------------------------------
 	// ResolveSourceFiles
-	// -------------------------------------------------------------------------
+	// --------------------------------------------------------------------------------------------------------------------------------------------------
 	std::vector<std::string> Builder::ResolveSourceFiles(
 		const ProjectFileReader& project,
 		const std::string& fileFilter)
 	{
-		// Project-file syntax for sources is the same bracketed-list convention
-		// used by libpaths/staticlibs/etc.: [a.xm, b/*.xm, c.xm]. Bare entries
-		// (no brackets) are also accepted -- TextParser's leading Skip eats
-		// them transparently.
+		// Project-file syntax for sources is the same bracketed-list convention used by libpaths/staticlibs/etc.: [a.xm, b/*.xm, c.xm]. Bare entries
+		// (no brackets) are also accepted -- TextParser's leading Skip eats them transparently.
 		std::string raw = project.GetString("sources", "[*.xm]");
 
 		std::vector<std::string> entries;
@@ -73,6 +71,7 @@ namespace xmc
 			TextParser p(raw);
 			p.Skip(" \t\r\n[");
 
+			// get a list of globs like "*.xm", "myfile.xm", etc
 			while (!p.Empty() && !p.CheckFor(']'))
 			{
 				auto [item, delim] = p.ReadUntil(",]", false);
@@ -85,7 +84,7 @@ namespace xmc
 			}
 		}
 
-		// Expand any glob entries; keep plain paths as-is.
+		// Expand any glob entries, keep plain paths as-is.
 		std::vector<std::string> allFiles;
 		for (const auto& entry : entries)
 		{

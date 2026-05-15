@@ -1,67 +1,43 @@
-.\hello.xm:3:1          File
-.\hello.xm:3:1            ExternDecl  kernel32:WriteFile  ::  function
-.\hello.xm:4:2              ParamList
-.\hello.xm:4:2                Param  handle : rcx  ::  *u8
-.\hello.xm:4:17                 Type  ::  *u8
-.\hello.xm:5:2                Param  buffer : rdx  ::  *u8
-.\hello.xm:5:17                 Type  ::  *u8
-.\hello.xm:6:2                Param  bytesToWrite : r8  ::  u32
-.\hello.xm:6:16                 Type  ::  u32
-.\hello.xm:7:2                Param  bytesWritten : r9  ::  *u32
-.\hello.xm:7:17                 Type  ::  *u32
-.\hello.xm:8:2                Param  overlapped  ::  *u8
-.\hello.xm:8:17                 Type  ::  *u8
-.\hello.xm:9:2              ReturnSpec  ::  b
-.\hello.xm:9:4                Type  ::  b
+.\hello.xm:3:7          File
+.\hello.xm:3:7            ExternDecl  kernel32:WriteFile  ::  function
+.\hello.xm:3:10             ReturnSpec  ::  b
+.\hello.xm:3:10               Type  ::  b
+.\hello.xm:3:32             ParamList
+.\hello.xm:3:23               Param  handle : rcx  ::  u64
+.\hello.xm:3:23                 Type  ::  u64
+.\hello.xm:4:14               Param  buffer : rdx  ::  *u8
+.\hello.xm:4:14                 Type  ::  *u8
+.\hello.xm:5:14               Param  bytesToWrite : r8  ::  u32
+.\hello.xm:5:14                 Type  ::  u32
+.\hello.xm:6:14               Param  bytesWritten : r9  ::  *u32
+.\hello.xm:6:14                 Type  ::  *u32
+.\hello.xm:7:14               Param  overlapped  ::  *u8
+.\hello.xm:7:14                 Type  ::  *u8
 .\hello.xm:11:1           ExternDecl  kernel32:GetStdHandle  ::  function
-.\hello.xm:12:2             ParamList
-.\hello.xm:12:2               Param  stdHandleId : rcx  ::  i32
-.\hello.xm:12:15                Type  ::  i32
-.\hello.xm:13:3             ReturnSpec  ::  *u8
-.\hello.xm:13:5               Type  ::  *u8
+.\hello.xm:11:12            ReturnSpec  ::  u64
+.\hello.xm:11:12              Type  ::  u64
+.\hello.xm:11:37            ParamList
+.\hello.xm:11:25              Param  stdHandleId : rcx  ::  i32
+.\hello.xm:11:25                Type  ::  i32
 .\hello.xm:15:1           ExternDecl  kernel32:ExitProcess  ::  function
-.\hello.xm:16:2             ParamList
-.\hello.xm:16:2               Param  exitCode : rcx  ::  u32
-.\hello.xm:16:12                Type  ::  u32
-.\hello.xm:20:5           FuncDecl  main  ::  function
-.\hello.xm:20:1             Type  ::  i32
-.\hello.xm:20:10            ParamList
+.\hello.xm:15:28            ParamList
+.\hello.xm:15:17              Param  exitCode : rcx  ::  u32
+.\hello.xm:15:17                Type  ::  u32
+.\hello.xm:20:1           FuncDecl  main  ::  function
+.\hello.xm:20:1             ReturnSpec
+.\hello.xm:20:1               Type
+.\hello.xm:20:9             ParamList
 .\hello.xm:20:12            Block
-.\hello.xm:21:6               VarDecl  h  ::  u64
-.\hello.xm:21:2                 Type  ::  u64
-.\hello.xm:21:22                Call  ::  *u8
-.\hello.xm:21:10                  Ident  GetStdHandle  ::  function
-.\hello.xm:21:22                  ArgList
-.\hello.xm:21:23                    IntLit  ::  u32
-.\hello.xm:23:7               VarDecl  msg  ::  u8[]
-.\hello.xm:23:2                 Type  ::  u8[]
-.\hello.xm:23:13                StringLit  ::  u8[]
-.\hello.xm:24:7               VarDecl  written  ::  u64
-.\hello.xm:24:2                 Type  ::  u64
-.\hello.xm:26:2               ExprStmt
-.\hello.xm:26:11                Call  ::  b
-.\hello.xm:26:2                   Ident  WriteFile  ::  function
-.\hello.xm:26:11                  ArgList
-.\hello.xm:26:12                    Ident  h  ::  u64
-.\hello.xm:26:15                    Ident  msg  ::  u8[]
-.\hello.xm:26:23                    MemberAccess  length  ::  u64
-.\hello.xm:26:20                      Ident  msg  ::  u8[]
-.\hello.xm:26:32                    AddressOf  ::  *u64
-.\hello.xm:26:33                      Ident  written  ::  u64
-.\hello.xm:26:42                    NullLit  ::  null
 
 Symbols:
-  WriteFile  ::  function  [stack]  scope=1
-  handle  ::  *u8  [stack]  scope=1.2
-  buffer  ::  *u8  [stack]  scope=1.2
-  bytesToWrite  ::  u32  [stack]  scope=1.2
-  bytesWritten  ::  *u32  [stack]  scope=1.2
-  overlapped  ::  *u8  [stack]  scope=1.2
-  GetStdHandle  ::  function  [stack]  scope=1
-  stdHandleId  ::  i32  [stack]  scope=1.3
-  ExitProcess  ::  function  [stack]  scope=1
-  exitCode  ::  u32  [stack]  scope=1.4
-  main  ::  function  [stack]  scope=1
-  h  ::  u64  [stack]  scope=1.5.6
-  msg  ::  u8[]  [stack]  scope=1.5.6
-  written  ::  u64  [stack]  scope=1.5.6
+  WriteFile  ::  function  [stack]  scope=3
+  handle  ::  u64  [stack]  scope=3.4
+  buffer  ::  *u8  [stack]  scope=3.4
+  bytesToWrite  ::  u32  [stack]  scope=3.4
+  bytesWritten  ::  *u32  [stack]  scope=3.4
+  overlapped  ::  *u8  [stack]  scope=3.4
+  GetStdHandle  ::  function  [stack]  scope=3
+  stdHandleId  ::  i32  [stack]  scope=3.5
+  ExitProcess  ::  function  [stack]  scope=3
+  exitCode  ::  u32  [stack]  scope=3.6
+  main  ::  function  [stack]  scope=3

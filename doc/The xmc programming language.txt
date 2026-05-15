@@ -722,13 +722,13 @@ array<T>, list, or var works without ceremony.
 
 For FFI declarations, the pointers to element types are used for things like buffers and strings:
 
-extern Kernel32:ReadFile(
-    hFile                  -> *ui : rcx,
-    lpBuffer               -> *u8 : rdx,        // pointer to the first byte in the buffer
-    nNumberOfBytesToRead   -> u32 : r8,         // size of the buffer
-    lpNumberOfBytesRead    -> *u32 : r9,        // pointer to a u32 to be filled with the number of bytes read
-    lpOverlapped           -> *u8               // (a byte pointer passed on the stack.. I don't believe this is actually used, but we pass a 0 anyway.)
-) -> b64 : rax;                                 // here we ask the compiler to cast the return value as an xmc boolean
+extern b:rax Kernel32:ReadFile(
+    u64:rcx   hFile,                  // opaque 64-bit handle (Windows HANDLE)
+    *u8:rdx   lpBuffer,               // pointer to the first byte in the buffer
+    u32:r8    nNumberOfBytesToRead,   // size of the buffer
+    *u32:r9   lpNumberOfBytesRead,    // pointer to a u32 to be filled with the number of bytes read
+    *u8       lpOverlapped            // (a byte pointer passed on the stack — no register clause)
+);                                    // b64:rax — the compiler casts the return value as an xmc boolean
 
 *u8[] is "raw pointer to an array of u8" — the xmc spelling of C's u8* parameter type. The array's length is determined by a separate length parameter or by the
 function's contract, not by xmc's type system.
@@ -2853,22 +2853,26 @@ RemoveNode(**var pp, *var target) {
 
 28. External Call Definitions
 
-// Explicit ABI mapping
-extern kernel32:WriteFile(
-    handle       -> *u8  : rcx,         // (64-bit) pointer to a byte passed in RCX
-    buffer       -> *u8  : rdx,         // .. passed in RDX
-    bytesToWrite -> u32  : r8,          // u32 value passed in R8
-    bytesWritten -> *u32 : r9,          // pointer to a u32 passed in R9
-    overlapped   -> *u8                 // on stack — no register clause
-) -> b64 : rax;
+// Explicit ABI mapping.
+// Return type (with optional :register) comes before the function name.
+// Parameter types (with optional :register) come before the parameter names.
+// Omitting the return spec declares a void-returning extern.
 
-extern kernel32:GetStdHandle(
-    stdHandleId -> i32 : rcx
-) -> *u8 : rax;
+extern b64:rax kernel32:WriteFile(
+    u64:rcx  handle,          // opaque 64-bit handle (Windows HANDLE)
+    *u8:rdx  buffer,          // pointer to the data buffer, passed in RDX
+    u32:r8   bytesToWrite,    // u32 value passed in R8
+    *u32:r9  bytesWritten,    // pointer to a u32 passed in R9
+    *u8      overlapped       // on the stack — no register clause
+);
+
+extern u64:rax kernel32:GetStdHandle(
+    i32:rcx stdHandleId
+);
 
 extern kernel32:ExitProcess(
-    exitCode -> u32 : rcx
-);                                     ; no return clause — void
+    u32:rcx exitCode
+);                            // no return spec — void
 
 
 ================================================================

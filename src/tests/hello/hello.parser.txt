@@ -1,8 +1,30 @@
-.\hello.xm:3:1          Unknown
-.\hello.xm:3:8          Ident  kernel32
-.\hello.xm:3:26         Unknown
-.\hello.xm:4:2          Ident  handle
-.\hello.xm:4:15         Unknown
-.\hello.xm:4:17         Unknown
-.\hello.xm:4:19         Type  
-.\hello.xm:4:19           Unknown
+.\hello.xm:3:7            File
+.\hello.xm:3:7              ExternDecl  kernel32:WriteFile
+.\hello.xm:3:10               ReturnSpec   : rax
+.\hello.xm:3:10                 Type  b
+.\hello.xm:3:32               ParamList
+.\hello.xm:3:23                 Param  handle : rcx
+.\hello.xm:3:23                   Type  u64
+.\hello.xm:4:14                 Param  buffer : rdx
+.\hello.xm:4:14                   Type  *u8
+.\hello.xm:5:14                 Param  bytesToWrite : r8
+.\hello.xm:5:14                   Type  u32
+.\hello.xm:6:14                 Param  bytesWritten : r9
+.\hello.xm:6:14                   Type  *u32
+.\hello.xm:7:14                 Param  overlapped
+.\hello.xm:7:14                   Type  *u8
+.\hello.xm:11:1             ExternDecl  kernel32:GetStdHandle
+.\hello.xm:11:12              ReturnSpec   : rax
+.\hello.xm:11:12                Type  u64
+.\hello.xm:11:37              ParamList
+.\hello.xm:11:25                Param  stdHandleId : rcx
+.\hello.xm:11:25                  Type  i32
+.\hello.xm:15:1             ExternDecl  kernel32:ExitProcess
+.\hello.xm:15:28              ParamList
+.\hello.xm:15:17                Param  exitCode : rcx
+.\hello.xm:15:17                  Type  u32
+.\hello.xm:20:1             FuncDecl  main
+.\hello.xm:20:1               ReturnSpec  
+.\hello.xm:20:1                 Type  i32
+.\hello.xm:20:9               ParamList
+.\hello.xm:20:12              Block

@@ -308,12 +308,68 @@ lower to C/C++ style with relative ease to add fast features to the engine.
 #15 Destruction is a stack-unwinding event
 __________________________________________
 
-Destructors fire on scope exit, in reverse-construction order. Each destructor calls dealloc against whatever vault its value lives in (or system heap, 
-or noop for stack). Vaults don't initiate destruction and don't walk their contents at teardown. Arena dealloc is a noop. Static / namespace-global / once-init 
-values register on a global destruction stack at first-access; main unwinds it at exit. The "vault scope same-or-containing" rule is what makes this sound — 
+Destructors fire on scope exit, in reverse-construction order. Each destructor calls dealloc against whatever vault its value lives in (or system heap,
+or noop for stack). Vaults don't initiate destruction and don't walk their contents at teardown. Arena dealloc is a noop. Static / namespace-global / once-init
+values register on a global destruction stack at first-access; main unwinds it at exit. The "vault scope same-or-containing" rule is what makes this sound —
 element scopes always exit before their vault's scope does. (Vaults declarations are added to the bottom of their scope unwind stacks, everything else is
 added to the top.)
 
+
+#16 Character-driven unified Parser replaced the Lexer→Parser token pipeline
+-----------------------------------------------------------------------------
+
+The original design called for a separate table-driven DFA Lexer that would produce a token queue consumed by a
+token-driven Parser. A partial Lexer.cpp was written to that design. It was replaced by a character-driven unified
+Parser: a single state machine whose drive loop reads source bytes directly, with two constexpr tables
+(kCharClass[256] and kStates[NUM_STATES] in ParseTables.h) replacing both the Lexer's DFA tables and the Parser's
+token-dispatch tables.
+
+Reasons:
+
+  - No token allocation. The token pipeline allocated and queued Token structs per identifier, keyword, and
+    punctuation mark. The character-driven loop has no heap traffic in the hot path; identifiers are accumulated
+    in-place in the source buffer and interned only when their role is known.
+
+  - No inter-stage queue. Eliminating the ConcurrentQueue between Lexer and Parser removes synchronisation on the
+    hot path for the common single-file-thread case, and removes the queue-draining overhead entirely.
+
+  - Context-sensitive classification without extra token kinds. The character-driven machine can give the same
+    byte sequence different interpretations depending on parse state (e.g. ':' as a register separator inside a
+    parameter vs. a qualifier separator in a qualified name) without the Lexer needing to produce multiple token
+    kinds for the same character, and without the Parser needing lookahead tokens to disambiguate.
+
+  - Tighter inner loop. The drive loop is a table lookup plus an advance — flat, branch-predictable, cache-hot.
+    It outperforms the token-dispatch loop whose branches scale with the number of token kinds.
+
+Cost: the character-level state machine has more states than a token-level grammar because whitespace and
+identifier accumulation that the Lexer handled implicitly must be explicit states. NS_SKIP_WS and NS_SKIP_COMMENTS
+flags on NestState make transparent skipping cheap without extra states for each context that allows them.
+
+
+#17 Morpher uses pendingChildren counter; Parser pre-allocates scope IDs
+------------------------------------------------------------------------
+
+Two related decisions about how the Parser and Morpher collaborate without either stage descending already-built
+tree structure.
+
+pendingChildren counter: each ParseTreeNode carries a uint16_t pendingChildren, set to childCount when the Parser
+commits the node's child array. The Morpher decrements it each time a child resolves. When it reaches zero the
+node is enqueued for its own processing. This answers "is this parent ready?" in O(1) — one decrement and compare
+— without scanning children on every upward propagation step. When a node is dequeued (all children resolved), the
+Morpher reads the children's current types to derive the parent's type; that read is productive, not a readiness
+scan, and happens exactly once per node per propagation round. Re-propagation (a symbol's type narrows after
+dependents were already typed) goes through the subscriber notification mechanism and bypasses the counter.
+
+Scope IDs in the Parser: the Morpher needs the enclosing scope path to declare symbols for Param and VarDecl
+nodes. Because the Morpher processes nodes bottom-up, declaration nodes (Param) are processed before their
+enclosing scope-opening ancestors (ExternDecl, FuncDecl, Block). Rather than requiring the Morpher to discover
+scope context by descending, the Parser pre-allocates a scope ID (SymbolTable::AllocScopeId) for each
+scope-opening node at the moment that node is created, and stores it on the node. The Morpher finds the enclosing
+scope by walking up parent pointers — always upward, never down — a path typically 2–4 hops deep.
+
+Combined effect: the Morpher never descends the tree. It processes one node at a time, walks up as far as further
+resolution is possible, and stops. Downward tree walks belong exclusively to the Reviewer (type-checking,
+conversion-node insertion, register assignment), the Coder (code-block selection), and the Emitter (byte emission).
 
 
 PENDING DESIGN QUESTIONS

@@ -168,3 +168,6 @@ or we might have to alter our BNF so that it conveys enough information to the p
 We may also need to alter the BNF so that the node tree shape that falls out of it is the node tree shape we want, with operators being parents of LHS and RHS expressions.
 
 Let's chat about this before we do anything. What do you think of this plan? Can it work? Do you think its less efficient? Do you think it can help resolve our DFA -> LALR difficulties?
+
+--------------------
+
