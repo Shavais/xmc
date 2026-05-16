@@ -43,6 +43,9 @@ namespace xmc
 		bool LexerLog = false;
 		bool ParserLog = false;
 		bool MorpherLog = false;
+		bool ReviewerLog = false;
+		bool CoderLog = false;
+		bool EmitterLog = false;
 
 		// Pipeline control flags. The Morpher sets these from any worker
 		// thread; the dispatcher reads them at the barrier in Compile().
@@ -80,6 +83,7 @@ namespace xmc
 			, LexerLog(other.LexerLog)
 			, ParserLog(other.ParserLog)
 			, MorpherLog(other.MorpherLog)
+			, ReviewerLog(other.ReviewerLog)
 			, ReparseRequired(other.ReparseRequired.load())
 			, ParseTreeScanRequired(other.ParseTreeScanRequired.load())
 			, ErrorOccurred(other.ErrorOccurred.load())
@@ -98,6 +102,7 @@ namespace xmc
 			, LexerLog(std::move(other.LexerLog))
 			, ParserLog(std::move(other.ParserLog))
 			, MorpherLog(std::move(other.MorpherLog))
+			, ReviewerLog(std::move(other.ReviewerLog))
 			, ReparseRequired(other.ReparseRequired.load())
 			, ParseTreeScanRequired(other.ParseTreeScanRequired.load())
 			, ErrorOccurred(other.ErrorOccurred.load())

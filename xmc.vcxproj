@@ -147,6 +147,7 @@
     <ClCompile Include="src\Compiler.cpp" />
     <ClCompile Include="src\compiler\Morpher.cpp" />
     <ClCompile Include="src\compiler\Parser.cpp" />
+    <ClCompile Include="src\compiler\Reviewer.cpp" />
     <ClCompile Include="src\compiler\SymbolTable.cpp" />
     <ClCompile Include="src\compiler\Types.cpp" />
     <ClCompile Include="src\compiler\Xmo.cpp" />
@@ -164,13 +165,14 @@
     <ClCompile Include="src\Tester.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <Text Include="doc\AI dumps.txt" />
-    <Text Include="doc\AI_conversation_journal.txt" />
+    <Text Include="src\old\doc\AI dumps.txt" />
+    <Text Include="src\old\doc\AI_conversation_journal.txt" />
     <Text Include="doc\design_rationale.txt" />
-    <Text Include="doc\journal.txt" />
+    <Text Include="src\old\doc\journal.txt" />
     <Text Include="doc\ProjectContext.txt" />
     <Text Include="doc\The XMC Programming Language.txt" />
-    <Text Include="doc\The xmc programming language - rev 01.txt" />
+    <Text Include="src\old\doc\ProjectContext.txt" />
+    <Text Include="src\old\doc\The xmc programming language - rev 01.txt" />
     <Text Include="doc\Under The Hood.txt" />
   </ItemGroup>
   <ItemGroup>
@@ -203,7 +205,7 @@
     <ClInclude Include="src\Tester.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="doc\xcm_04.bnf" />
+    <None Include="src\old\doc\xcm_04.bnf" />
     <!-- rev01: old LALR lexer/parser, kept for reference -->
     <None Include="src\rev01\Lexer.cpp" />
     <None Include="src\rev01\Parser.cpp" />

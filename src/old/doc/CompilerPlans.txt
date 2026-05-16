@@ -115,7 +115,7 @@ We'll drive the compiler from the lexer. It'll have a big StringView (a struct w
 covers an entire source file (whose contents we have in a byte buffer called source). In the course of what it does, it'll create a StringView per non-terminal node. 
 We'll have a current StringView that we're working with. 
 
-We'll have a NestState table that looks like this:
+We'll have a NextState table that looks like this:
 
 [state: {nextchars: nextChars, nextStates: {Char: {nextstate: {action, nodekind, basetype, usertype, minrmask, maxrmask, LCR, consume}, ..}, ..}, ..}, ..]
 

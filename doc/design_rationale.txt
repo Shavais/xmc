@@ -248,7 +248,7 @@ would blur both signals — that case stays rejected, per Key Decision #7.
 12. xmc has no LLVM
 -------------------
 
-The compiler pipeline is Lexer → Parser → Morpher → Reviewer → Coder → Linker, all custom. There is no general-purpose optimizer.
+The compiler pipeline is Parser → Morpher → Reviewer → Coder → Linker, all custom. There is no general-purpose optimizer.
 
 This means optimization decisions must be assigned to specific stages:
 

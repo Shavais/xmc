@@ -142,6 +142,11 @@ namespace xmc
         // walking parent pointers rather than maintaining its own scope stack.
         uint32_t        scopeId = 0;
 
+        // Reviewer-written fields. Zero until the Reviewer runs.
+        uint8_t         paramSlot      = 0;  // arg register/stack slot; see UTH §1e
+        uint32_t        totalStackSize = 0;  // FuncDecl: prologue sub rsp,N bytes
+        uint32_t        funcFlags      = 0;  // FuncDecl: bit 0=isFallible, 1=needsListeningFlavor, 2=needsDiscardingFlavor
+
         // Coder fills these; Emitter consumes. Empty until the Coder runs.
         uint16_t*       codeBlocks     = nullptr;
         uint32_t        codeBlockCount = 0;
@@ -156,8 +161,9 @@ namespace xmc
     // and passes a string_view. The Parser owns all parse-tree allocation
     // (in xmo.arena) and all child-count bookkeeping.
     //
-    // When a noun node is complete the Parser submits a Morpher task to pool.
+    // When a noun node is complete the Parser submits a Morpher task to pool
     // The pool reference is non-owning; the pool outlives the Parser call.
+	// [The concurrent Morpher is a future state that requires the subscriber index to be implemented.]
     //
     // On parse error the Parser sets job.ErrorOccurred, emits a diagnostic
     // (file:line:col: expected one of [...], got 'x'), and attempts to

@@ -177,6 +177,9 @@ namespace xmc
 			job.LexerLog = (bool)project.GetInt("lexerlog");
 			job.ParserLog = (bool)project.GetInt("parserlog");
 			job.MorpherLog = (bool)project.GetInt("morpherlog");
+			job.ReviewerLog = (bool)project.GetInt("reviewerlog");
+			job.CoderLog = (bool)project.GetInt("coderlog");
+			job.EmitterLog = (bool)project.GetInt("emitterlog");
 			return job;
 		};
 

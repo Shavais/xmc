@@ -167,22 +167,83 @@ pipeline on that closure, and asserts as an invariant that each restart kind fir
 ------------
 
 Per-xmo parallel, runs after the Morpher has converged for that Xmo. Does the codegen-prep
-work that needs converged types but precedes block selection: 
+work that needs converged types but precedes block selection:
 
     - inserts conversion nodes where operand types don't match operation expectations
     - inserts null verb nodes where no conversion is available and prunes the right-hand subtrees under them
     - assigns parameter ids (registers, stack slots, immediates, RIP-relative literals, SymbolKeys, jump labels) to every noun and value-producing verb in each function
-    - for fallible call sites, decides listening_flag, dispatch_target, return_used_flag, and routed_kinds; builds each error-block's dispatch table from its on-error 
+    - for fallible call sites, decides listening_flag, dispatch_target, return_used_flag, and routed_kinds; builds each error-block's dispatch table from its on-error
       clauses; assigns it-binding stack slots for clauses; decides per fallible function whether a listening flavor, a discarding flavor, or both must be compiled — see §6.5
     - writes per-verb-node parameter lists into payloads for the Coder to consume
-    - computes per-function totalStackSize for the Emitter's prologue back-patch — for fallible functions compiled in the listening flavor, this includes one 
+    - computes per-function totalStackSize for the Emitter's prologue back-patch — for fallible functions compiled in the listening flavor, this includes one
       fixed-size error-object slot sized for the maximum error object the function can produce
     - honors user register-pin annotations within the per-function budget
     - emits a diagnostic for pins that exceed it
     - scans for Unresolved-typed symbols and Error-tainted nodes
-    - sets up the Coder to emit runtime no-ops for them per XMC §27d. 
+    - sets up the Coder to emit runtime no-ops for them per XMC §27d.
 
 See §6.1 for the full stage-division discussion.
+
+Fields written by the Reviewer (added to ParseTreeNode in Parser.h; zero until Reviewer runs):
+
+    paramSlot      — u8; written on each arg-expression child of an ArgList. Encodes
+                     which register or stack slot this argument occupies in the outgoing
+                     call: 1=rcx, 2=rdx, 3=r8, 4=r9, 5=[rsp+32], 6=[rsp+40], … 0=unassigned.
+                     The Coder reads this to select the right move instruction for each arg.
+
+    totalStackSize — u32; written on FuncDecl nodes. Total bytes to reserve in the prologue
+                     (shadow space + extra-arg slots + locals, rounded to ABI alignment).
+                     The Emitter reads this for the sub rsp,N / add rsp,N back-patch.
+
+    funcFlags      — u32; written on FuncDecl nodes. Bitmap reserved for codegen variants:
+                     bit 0 = isFallible, bit 1 = needsListeningFlavor,
+                     bit 2 = needsDiscardingFlavor. Zero for all non-fallible functions.
+                     Fallible codegen is deferred (§6.5); the field is declared now so
+                     Coder can check it without a structural change later.
+
+Symbol field used by the Reviewer (already declared on Symbol in SymbolTable.h):
+
+    offset         — u32; set to the rsp-relative byte offset of the local variable's stack
+                     slot. Reviewer assigns this during stack frame layout; Coder reads it
+                     when generating loads and stores for VarDecl locals.
+
+Stack frame layout (Windows x64 ABI):
+
+    On entry to a function, rsp+8 is 16-byte aligned (the call instruction pushed 8 bytes).
+    The prologue does sub rsp, N; on return the epilogue does add rsp, N; ret.
+    N must satisfy N ≡ 8 (mod 16) so that rsp is 16-byte aligned at each call site inside
+    the function (required by the Windows x64 ABI).
+
+    Frame slot assignments (all offsets from rsp after the prologue sub):
+
+        rsp+0  .. rsp+31  — 32-byte shadow space; caller must allocate this for every call,
+                             even if the callee uses fewer than four register parameters.
+        rsp+32 .. rsp+N-1 — extra argument slots: one 8-byte slot per argument beyond four
+                             in the deepest call within this function (e.g. if main calls
+                             WriteFile which has 5 args, one extra slot is needed at rsp+32).
+        rsp+N  ..          — local variables, each assigned Symbol::offset = rsp+N + 8*i
+                             in declaration order.
+
+    totalStackSize = (32 shadow) + (extra_arg_slots * 8) + (local_bytes), rounded up to
+    the next value ≡ 8 (mod 16). The Emitter patches this into the sub rsp,N / add rsp,N
+    instruction pair in the prologue/epilogue.
+
+Register assignment for call sites:
+
+    The Reviewer walks each Call node, reads sym->declNode (the ExternDecl or FuncDecl),
+    and matches each child of the call's ArgList to the corresponding child of the callee's
+    ParamList. Each Param carries a regHint (rcx, rdx, r8, r9, or empty for stack args).
+    The Reviewer writes paramSlot on each arg expression:
+        regHint "rcx" → paramSlot 1
+        regHint "rdx" → paramSlot 2
+        regHint "r8"  → paramSlot 3
+        regHint "r9"  → paramSlot 4
+        no regHint    → paramSlot 5, 6, … (each additional slot at rsp+32, rsp+40, …)
+    The Coder uses paramSlot to choose the correct move or store instruction for each arg.
+
+[IMPLEMENTATION STATUS] Reviewer is a no-op stub (Reviewer.h). Next to implement.
+The Coder and Emitter do not yet exist. The goal is a working end-to-end hello.xm
+executable once all three stages are in place.
 
 1f. Coder
 ---------
@@ -240,6 +301,11 @@ ParseTreeNode (allocated from the per-file Xmo::arena, never freed individually)
     pendingChildren  — std::atomic<uint16_t>; set to childCount by the Parser, decremented atomically by the Morpher
     scopeId          — u32; pre-allocated by the Parser for scope-opening nodes (File, ExternDecl, FuncDecl, Block)
     payload          — kind-specific union (literal value, call args, function metadata, etc.)
+    paramSlot        — u8; written by the Reviewer on each arg-expression child of an ArgList;
+                       1=rcx, 2=rdx, 3=r8, 4=r9, 5=[rsp+32], 6=[rsp+40], … 0=unassigned
+    totalStackSize   — u32; written by the Reviewer on FuncDecl nodes; total prologue bytes for sub rsp,N
+    funcFlags        — u32; written by the Reviewer on FuncDecl nodes; bit 0=isFallible,
+                       bit 1=needsListeningFlavor, bit 2=needsDiscardingFlavor
     codeBlocks       — uint16_t[]; populated by the Coder, empty pre-Coder, consumed by the Emitter
 
 Most fields are plain (non-atomic): each is written by exactly one pipeline stage before the next stage reads it.

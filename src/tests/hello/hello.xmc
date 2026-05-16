@@ -22,6 +22,9 @@ OutPath = .
 LexerLog = 1
 ParserLog = 1
 MorpherLog = 1
+ReviewerLog = 1
+CoderLog = 1
+EmitterLog = 1
 
 [release]
 DebugSymbols = 0
