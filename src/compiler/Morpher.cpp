@@ -1,54 +1,41 @@
 // compiler/Morpher.cpp
 //
-// First-pass Morpher: pure analysis. See Morpher.h for contract.
+// Per-file Morpher: work-queue + upward-propagation model.
 //
-// What this implements (the minimum hello.xm needs):
+// Design (Under The Hood §1c):
+//   The Parser submits one pool task per completed leaf node. Each task calls
+//   MorphNoun, which applies the leaf's typing rule then walks up via parent
+//   pointers. At each ancestor, pendingChildren is atomically decremented; the
+//   task that brings it to zero wins the right to apply that ancestor's rule
+//   and continue upward. All other tasks that race on the same ancestor return
+//   immediately after the fetch_sub, leaving the winner to proceed.
 //
-//   - Top-down recursive walk of xmo.parseTree.
-//   - Scope-id allocation: one scope per File / ExternDecl / FuncDecl
-//     parameter list / Block. Nested scopes record the full chain on
-//     each Symbol's path, so SymbolTable::ResolveSymbol's outer-walk
-//     finds the right binding.
-//   - Symbol declaration for ExternDecl / FuncDecl / Param / VarDecl.
-//     The declaring node's `declaredSymbol` back-pointer is set; the
-//     Symbol's `baseType`, `minrmask`, `maxrmask`, and `allocType`
-//     are populated. `xmo.ownedSymbols` collects the back-references
-//     so the rest of the pipeline can iterate them.
-//   - Ident resolution against the current scope chain. The resolved
-//     Symbol is stored on the Ident node (via the `declaredSymbol`
-//     field, reused as a "the Symbol associated with this node"
-//     pointer) and the Ident's baseType / pointerDepth / isArray are
-//     copied from the Symbol's declaring node.
-//   - baseType propagation up the expression tree: literals get a
-//     baseType from their kind; member access / address-of / deref
-//     compute their baseType from the operand; calls take their
-//     baseType from the callee's return spec.
+//   Scope-opening nodes (File, ExternDecl, FuncDecl, Block) have their scope
+//   IDs pre-allocated by the Parser and stored on the node, so the Morpher
+//   never maintains its own scope stack — it reconstructs scope paths on demand
+//   by walking parent pointers.
 //
-// What this does NOT implement (deferred until Reviewer / Coder show
-// they need it):
+//   Symbol::declNode carries the declaring ParseTreeNode* directly, so Call and
+//   Ident nodes can read the callee's return type without a per-run map.
 //
-//   - True streaming morphing. Morph drains the leaf queue and then
-//     runs the same MorphTree pass MorphTree would, so a downstream
-//     stage can rely on identical results from either entry.
-//   - rmask propagation beyond defaults. hello.xm doesn't exercise
-//     refinement morphing (no := assignments, no shared containers,
-//     no concurrency). When a real test introduces them, this is
-//     where the propagation rules get added.
-//   - Conversion-node insertion. Per �6.1 that's the Reviewer's job;
-//     we just leave operand types as resolved and let the Reviewer
-//     deal with mismatches.
-//   - Cross-file subscriber bookkeeping. hello.xm is one file; until
-//     we have a multi-file test, the subscriber index hooks stay out.
+//   MorphTree calls pool.wait() to drain all MorphNoun tasks, then writes the
+//   morpher log if requested by the project file.
+//
+// What this does NOT yet implement (deferred until tests require it):
+//   - Re-propagation after late symbol resolution (subscriber index).
+//   - rmask narrowing beyond defaults.
+//   - Conversion-node insertion (Reviewer's job, §6.1).
+//   - Cross-file subscriber bookkeeping (single-file hello.xm doesn't need it).
 //
 #include "pch/pch.h"
 #include "Morpher.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "tool/Logger.h"
@@ -60,603 +47,176 @@ namespace xmc
 {
 	namespace
 	{
-		// BaseTypeIds is an enum class : uint8_t; ParseTreeNode::baseType
-		// and Symbol::baseType both store u32. This little helper avoids
-		// peppering static_casts at every assignment.
 		static constexpr uint32_t U(BaseTypeIds id)
 		{
 			return static_cast<uint32_t>(id);
 		}
 
 		// =============================================================
-		// MorpherState
+		// kExprDesc — typing rule for expression nodes, indexed by
+		// ParseKind cast to uint16_t.
 		//
-		// Per-file walk state. One instance per MorphTree call,
-		// stack-allocated.
+		// Nodes with ExprRule::None are declaration or structural nodes
+		// handled by kNodeDesc instead.
 		// =============================================================
-		struct MorpherState
+		enum class ExprRule : uint8_t
 		{
-			Xmo& xmo;
-			SymbolTable& symbols;
-			const CompileJob& job;
-
-			// Scope path: outermost (file scope) at index 0, innermost
-			// at back(). Re-built by the recursive walk.
-			std::vector<uint32_t> scopeStack;
-
-			// Symbol -> declaring parse node. Lets a Call site at e.g.
-			// "WriteFile(...)" find the ExternDecl that declared
-			// WriteFile and read its return spec / parameter shapes.
-			std::unordered_map<Symbol*, ParseTreeNode*> declSite;
-
-			// Symbols created during this walk, in declaration order.
-			// Used both for the morpher log and to populate
-			// xmo.ownedSymbols (the rest of the pipeline expects the
-			// xmo to enumerate its own symbols).
-			std::vector<Symbol*> declared;
-
-			MorpherState(Xmo& x, SymbolTable& s, const CompileJob& j)
-				: xmo(x), symbols(s), job(j) {
-			}
-
-			// ---- Walk -------------------------------------------------
-
-			void MorphFile(ParseTreeNode* file);
-			void MorphTopDecl(ParseTreeNode* node);
-			void MorphExternDecl(ParseTreeNode* node);
-			void MorphFuncDecl(ParseTreeNode* node);
-			void MorphParam(ParseTreeNode* node, AllocationType alloc);
-			void MorphReturnSpec(ParseTreeNode* node);
-			void MorphType(ParseTreeNode* node);
-			void MorphBlock(ParseTreeNode* node);
-			void MorphStmt(ParseTreeNode* node);
-			void MorphVarDecl(ParseTreeNode* node);
-			void MorphReturn(ParseTreeNode* node);
-			void MorphExprStmt(ParseTreeNode* node);
-			void MorphExpr(ParseTreeNode* node);
-
-			// ---- Helpers ----------------------------------------------
-
-			// Declares a Symbol with `name` in the innermost current
-			// scope. Sets allocType, registers the back-pointer in
-			// xmo.ownedSymbols, and remembers the declaring node.
-			Symbol* DeclareSymbol(InternedString name,
-				AllocationType alloc,
-				ParseTreeNode* declNode);
-
-			// Resolves `name` against the current scope chain
-			// (innermost-first walk inside SymbolTable).
-			Symbol* ResolveSymbol(InternedString name);
-
-			// Copy baseType / pointerDepth / isArray from `src` onto
-			// `dst`. Used at every "the type of this node is the type
-			// of that one" decision point.
-			void CopyTypeShape(ParseTreeNode* dst,
-				const ParseTreeNode* src);
-
-			// First child of `parent` whose kind matches `k`, or nullptr.
-			ParseTreeNode* FirstChildOfKind(ParseTreeNode* parent, ParseKind k);
-
-			// Allocates a new scope id, pushes it onto scopeStack, and
-			// records an XmoScope in xmo.scopeTree so the persisted scope
-			// tree is complete by the time the Morpher is done.
-			uint32_t PushScope(ScopeTypes blockType);
-			void     PopScope();
-
-			// Diagnostic. Stream to oserror with a "filename:line:col"
-			// prefix and set ErrorOccurred.
-			void Report(const ParseTreeNode* at, const std::string& msg);
-
-			// Pretty-print baseType with pointer/array decoration for
-			// the morpher log.
-			std::string FormatType(uint32_t baseType,
-				uint8_t pointerDepth,
-				bool isArray) const;
-
-			void WriteMorpherLog();
-			void DumpNode(std::ofstream& out,
-				const ParseTreeNode* n, int depth);
+			None = 0,
+			IntLit,
+			FloatLit,
+			StringLit,
+			CharLit,
+			BoolLit,
+			NullLit,
+			Ident,
+			AddressOf,
+			Deref,
+			CopyChild0,   // Negate, UnaryPlus, Not, BitNot, Assign, BinOp, Subscript
+			MemberAccess,
+			Call,
+			ArgList,      // structural; no type on the ArgList itself
 		};
 
-		// -----------------------------------------------------------
-		// File / top-level
-		// -----------------------------------------------------------
-		void MorpherState::MorphFile(ParseTreeNode* file)
-		{
-			PushScope(ScopeTypes::File);
+		// One entry per ParseKind value, in enum-declaration order.
+		static constexpr ExprRule kExprDesc[] = {
+			ExprRule::None,        // Unknown
+			ExprRule::None,        // File
+			ExprRule::None,        // ExternDecl
+			ExprRule::None,        // FuncDecl
+			ExprRule::None,        // ParamList
+			ExprRule::None,        // Param
+			ExprRule::None,        // ReturnSpec
+			ExprRule::None,        // Type
+			ExprRule::None,        // Block
+			ExprRule::None,        // VarDecl
+			ExprRule::None,        // ExprStmt
+			ExprRule::None,        // Return
+			ExprRule::ArgList,     // ArgList
+			ExprRule::CopyChild0,  // Assign
+			ExprRule::Call,        // Call
+			ExprRule::MemberAccess,// MemberAccess
+			ExprRule::CopyChild0,  // Subscript
+			ExprRule::AddressOf,   // AddressOf
+			ExprRule::Deref,       // Deref
+			ExprRule::CopyChild0,  // Negate
+			ExprRule::CopyChild0,  // UnaryPlus
+			ExprRule::CopyChild0,  // Not
+			ExprRule::CopyChild0,  // BitNot
+			ExprRule::CopyChild0,  // BinOp
+			ExprRule::Ident,       // Ident
+			ExprRule::IntLit,      // IntLit
+			ExprRule::FloatLit,    // FloatLit
+			ExprRule::StringLit,   // StringLit
+			ExprRule::CharLit,     // CharLit
+			ExprRule::BoolLit,     // BoolLit
+			ExprRule::NullLit,     // NullLit
+			ExprRule::None,        // Stub
+		};
+		static_assert(static_cast<size_t>(ParseKind::Stub) < std::size(kExprDesc),
+			"kExprDesc too small — add entries for new ParseKind values");
 
-			for (uint32_t i = 0; i < file->childCount; ++i) {
-				MorphTopDecl(file->children[i]);
-			}
-
-			PopScope();
-		}
-
-		void MorpherState::MorphTopDecl(ParseTreeNode* node)
-		{
-			switch (node->kind) {
-			case ParseKind::ExternDecl: MorphExternDecl(node); break;
-			case ParseKind::FuncDecl:   MorphFuncDecl(node);   break;
-			default:
-				Report(node, "unexpected top-level declaration kind");
-				break;
-			}
-		}
-
-		// -----------------------------------------------------------
-		// extern kernel32:WriteFile(params) -> retType:retReg ;
+		// =============================================================
+		// kNodeDesc — rule for declaration and structural nodes, indexed
+		// by ParseKind cast to uint16_t.
 		//
-		// The qualifier ("kernel32") stays as metadata on the
-		// ExternDecl node. The Symbol itself is registered under the
-		// bare name in file scope so an unqualified call from xmc
-		// code resolves it. Linker-side import resolution reads the
-		// qualifier from the ExternDecl payload at emit time.
-		// -----------------------------------------------------------
-		void MorpherState::MorphExternDecl(ParseTreeNode* node)
+		// Nodes whose ExprRule is non-None are not looked up in this table.
+		// =============================================================
+		enum class NodeRule : uint8_t
 		{
-			// allocType doesn't really fit a function-import symbol --
-			// the enum is for variable storage. Stack is the harmless
-			// default; downstream stages key off baseType=function and
-			// the ExternDecl payload, not allocType.
-			Symbol* sym = DeclareSymbol(node->name,
-				AllocationType::Stack, node);
-			node->declaredSymbol = sym;
-			node->baseType = U(BaseTypeIds::function);
-			if (sym) {
-				sym->baseType.store(U(BaseTypeIds::function),
-					std::memory_order_relaxed);
+			None = 0,       // structural with no action (ParamList, ExprStmt, Return, …)
+			FileNode,       // record XmoScope for file scope
+			TypeNode,       // map keyword → baseType
+			ReturnSpecNode, // copy type from Type child
+			ParamNode,      // copy type, declare symbol
+			ExternDeclNode, // record scope, declare function symbol
+			FuncDeclNode,   // record scope, declare function symbol
+			VarDeclNode,    // copy type, declare symbol
+			BlockNode,      // record XmoScope for block scope
+		};
+
+		static constexpr NodeRule kNodeDesc[] = {
+			NodeRule::None,          // Unknown
+			NodeRule::FileNode,      // File
+			NodeRule::ExternDeclNode,// ExternDecl
+			NodeRule::FuncDeclNode,  // FuncDecl
+			NodeRule::None,          // ParamList — no action; just drains pendingChildren
+			NodeRule::ParamNode,     // Param
+			NodeRule::ReturnSpecNode,// ReturnSpec
+			NodeRule::TypeNode,      // Type
+			NodeRule::BlockNode,     // Block
+			NodeRule::VarDeclNode,   // VarDecl
+			NodeRule::None,          // ExprStmt
+			NodeRule::None,          // Return
+			NodeRule::None,          // ArgList   — kExprDesc handles it
+			NodeRule::None,          // Assign    — kExprDesc
+			NodeRule::None,          // Call      — kExprDesc
+			NodeRule::None,          // MemberAccess — kExprDesc
+			NodeRule::None,          // Subscript — kExprDesc
+			NodeRule::None,          // AddressOf — kExprDesc
+			NodeRule::None,          // Deref     — kExprDesc
+			NodeRule::None,          // Negate    — kExprDesc
+			NodeRule::None,          // UnaryPlus — kExprDesc
+			NodeRule::None,          // Not       — kExprDesc
+			NodeRule::None,          // BitNot    — kExprDesc
+			NodeRule::None,          // BinOp     — kExprDesc
+			NodeRule::None,          // Ident     — kExprDesc
+			NodeRule::None,          // IntLit    — kExprDesc
+			NodeRule::None,          // FloatLit  — kExprDesc
+			NodeRule::None,          // StringLit — kExprDesc
+			NodeRule::None,          // CharLit   — kExprDesc
+			NodeRule::None,          // BoolLit   — kExprDesc
+			NodeRule::None,          // NullLit   — kExprDesc
+			NodeRule::None,          // Stub
+		};
+		static_assert(static_cast<size_t>(ParseKind::Stub) < std::size(kNodeDesc),
+			"kNodeDesc too small — add entries for new ParseKind values");
+
+		// =============================================================
+		// Forward declarations of free functions
+		// =============================================================
+		static void ApplyRule(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+		static void ApplyExprRule(ParseTreeNode* n, ExprRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+		static void ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+		static void PropagateUp(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+
+		// =============================================================
+		// Scope helpers
+		// =============================================================
+
+		static void CollectScopePath(ParseTreeNode* startFrom,
+			std::vector<uint32_t>& path)
+		{
+			path.clear();
+			for (ParseTreeNode* cur = startFrom; cur; cur = cur->parent) {
+				if (cur->scopeId != 0) path.push_back(cur->scopeId);
 			}
-
-			// Open a private parameter scope for the params. Their
-			// names aren't reachable from xmc code (an unqualified
-			// "handle" should not collide with a local variable named
-			// "handle" elsewhere), so we wrap them in their own scope.
-			PushScope(ScopeTypes::Function);
-
-			ParseTreeNode* paramList = FirstChildOfKind(node, ParseKind::ParamList);
-			if (paramList) {
-				for (uint32_t i = 0; i < paramList->childCount; ++i) {
-					MorphParam(paramList->children[i],
-						AllocationType::Stack);
-				}
-			}
-
-			ParseTreeNode* ret = FirstChildOfKind(node, ParseKind::ReturnSpec);
-			if (ret) MorphReturnSpec(ret);
-
-			PopScope();
+			std::reverse(path.begin(), path.end());
 		}
 
-		// -----------------------------------------------------------
-		// retType funcName(params) { body }
-		//
-		// FuncDecl children: [Type, ParamList, Block]. The Type child
-		// IS the return type (no ReturnSpec wrapper, unlike extern).
-		// -----------------------------------------------------------
-		void MorpherState::MorphFuncDecl(ParseTreeNode* node)
+		static uint32_t GetParentScopeId(ParseTreeNode* parent)
 		{
-			// As with ExternDecl, allocType is irrelevant for a function
-			// symbol; default it to Stack.
-			Symbol* sym = DeclareSymbol(node->name,
-				AllocationType::Stack, node);
-			node->declaredSymbol = sym;
-			node->baseType = U(BaseTypeIds::function);
-			if (sym) {
-				sym->baseType.store(U(BaseTypeIds::function),
-					std::memory_order_relaxed);
+			for (ParseTreeNode* cur = parent; cur; cur = cur->parent) {
+				if (cur->scopeId != 0) return cur->scopeId;
 			}
-
-			// Return type
-			ParseTreeNode* retType = FirstChildOfKind(node, ParseKind::Type);
-			if (retType) MorphType(retType);
-
-			// Open the function scope; params + body live inside.
-			PushScope(ScopeTypes::Function);
-
-			ParseTreeNode* paramList = FirstChildOfKind(node, ParseKind::ParamList);
-			if (paramList) {
-				for (uint32_t i = 0; i < paramList->childCount; ++i) {
-					MorphParam(paramList->children[i],
-						AllocationType::Stack);
-				}
-			}
-
-			ParseTreeNode* body = FirstChildOfKind(node, ParseKind::Block);
-			if (body) MorphBlock(body);
-
-			PopScope();
-		}
-
-		// -----------------------------------------------------------
-		// param := identifier '->' type (':' register)?
-		//
-		// The Param node carries the param name and the optional
-		// register hint; its sole child is the Type. We resolve the
-		// type, copy its shape onto the Param node, and create a
-		// Symbol in the current scope.
-		// -----------------------------------------------------------
-		void MorpherState::MorphParam(ParseTreeNode* node,
-			AllocationType alloc)
-		{
-			ParseTreeNode* type = FirstChildOfKind(node, ParseKind::Type);
-			if (type) {
-				MorphType(type);
-				CopyTypeShape(node, type);
-			}
-
-			Symbol* sym = DeclareSymbol(node->name, alloc, node);
-			node->declaredSymbol = sym;
-			if (sym) {
-				sym->pointerDepth = node->pointerDepth;
-				sym->isArray = node->isArray;
-				sym->baseType.store(node->baseType,
-					std::memory_order_relaxed);
-			}
-		}
-
-		// -----------------------------------------------------------
-		// return_spec := '->' type (':' register)?
-		// -----------------------------------------------------------
-		void MorpherState::MorphReturnSpec(ParseTreeNode* node)
-		{
-			ParseTreeNode* type = FirstChildOfKind(node, ParseKind::Type);
-			if (type) {
-				MorphType(type);
-				CopyTypeShape(node, type);
-			}
-			else {
-			}
-		}
-
-		// -----------------------------------------------------------
-		// type := '*'* simple_type ('[' ']')?
-		//
-		// The Parser already split off pointerDepth and isArray. We
-		// just need to map `name` (the primitive keyword spelling or
-		// a user-typed identifier) to a baseType id.
-		// -----------------------------------------------------------
-		void MorpherState::MorphType(ParseTreeNode* node)
-		{
-			std::string_view kw(node->name.str, node->name.len);
-			BaseTypeIds id = BaseTypeFromKeyword(kw);
-			// Unresolved here means "not a primitive keyword" -- could be
-			// a user-defined type. hello.xm has no user types so anything
-			// not in the primitive table stays Unresolved; the Reviewer's
-			// scan picks it up if it matters.
-			node->baseType = U(id);
-		}
-
-		// -----------------------------------------------------------
-		// block := '{' stmt* '}'
-		// -----------------------------------------------------------
-		void MorpherState::MorphBlock(ParseTreeNode* node)
-		{
-			PushScope(ScopeTypes::Nested);
-
-			for (uint32_t i = 0; i < node->childCount; ++i) {
-				MorphStmt(node->children[i]);
-			}
-
-			PopScope();
-		}
-
-		void MorpherState::MorphStmt(ParseTreeNode* node)
-		{
-			switch (node->kind) {
-			case ParseKind::VarDecl:  MorphVarDecl(node);  break;
-			case ParseKind::Return:   MorphReturn(node);   break;
-			case ParseKind::ExprStmt: MorphExprStmt(node); break;
-			case ParseKind::Block:    MorphBlock(node);    break;
-			default:
-				Report(node, std::string("unhandled statement kind: ") +
-					ParseKindName(node->kind));
-				break;
-			}
-		}
-
-		// -----------------------------------------------------------
-		// var_decl := type identifier ('=' expr)? ';'
-		// -----------------------------------------------------------
-		void MorpherState::MorphVarDecl(ParseTreeNode* node)
-		{
-			ParseTreeNode* type = FirstChildOfKind(node, ParseKind::Type);
-			if (type) {
-				MorphType(type);
-				CopyTypeShape(node, type);
-			}
-
-			Symbol* sym = DeclareSymbol(node->name,
-				AllocationType::Stack, node);
-			node->declaredSymbol = sym;
-			if (sym) {
-				sym->pointerDepth = node->pointerDepth;
-				sym->isArray = node->isArray;
-				sym->baseType.store(node->baseType,
-					std::memory_order_relaxed);
-			}
-
-			// Optional initializer: any non-Type child after the Type.
-			for (uint32_t i = 0; i < node->childCount; ++i) {
-				if (node->children[i]->kind != ParseKind::Type) {
-					MorphExpr(node->children[i]);
-				}
-			}
-		}
-
-		void MorpherState::MorphReturn(ParseTreeNode* node)
-		{
-			for (uint32_t i = 0; i < node->childCount; ++i) {
-				MorphExpr(node->children[i]);
-			}
-			// Conformance with the enclosing function's return type
-			// is the Reviewer's responsibility (per �6.1.1).
-		}
-
-		void MorpherState::MorphExprStmt(ParseTreeNode* node)
-		{
-			for (uint32_t i = 0; i < node->childCount; ++i) {
-				MorphExpr(node->children[i]);
-			}
-		}
-
-		// -----------------------------------------------------------
-		// Expressions. Recursive bottom-up: process children, then
-		// derive this node's type from theirs.
-		// -----------------------------------------------------------
-		void MorpherState::MorphExpr(ParseTreeNode* node)
-		{
-			// Resolve children first (post-order type derivation).
-			for (uint32_t i = 0; i < node->childCount; ++i) {
-				MorphExpr(node->children[i]);
-			}
-
-			switch (node->kind) {
-				// -- Leaves ----------------------------------------
-			case ParseKind::IntLit: {
-				// Smallest unsigned that fits. The Reviewer will
-				// handle context-driven conversion (e.g. fitting
-				// 0xFFFFFFF5 into an i32 parameter slot).
-				uint64_t v = node->intValue;
-				if (v <= 0xFFull)         node->baseType = U(BaseTypeIds::T_U8);
-				else if (v <= 0xFFFFull)       node->baseType = U(BaseTypeIds::T_U16);
-				else if (v <= 0xFFFFFFFFull)   node->baseType = U(BaseTypeIds::T_U32);
-				else                            node->baseType = U(BaseTypeIds::T_U64);
-				break;
-			}
-			case ParseKind::FloatLit:
-				node->baseType = U(BaseTypeIds::T_F64);
-				break;
-			case ParseKind::StringLit:
-				// "..." is an open array of u8 (per �9 + �28's
-				// *u8[] usage on FFI parameters). Treating it as
-				// u8 + isArray=true matches the spelling u8[] of
-				// the variable that holds it in hello.xm.
-				node->baseType = U(BaseTypeIds::T_U8);
-				node->isArray = true;
-				break;
-			case ParseKind::CharLit:
-				node->baseType = U(BaseTypeIds::c8);
-				break;
-			case ParseKind::BoolLit:
-				node->baseType = U(BaseTypeIds::b);
-				break;
-			case ParseKind::NullLit:
-				node->baseType = U(BaseTypeIds::Null);
-				break;
-
-			case ParseKind::Ident: {
-				Symbol* sym = ResolveSymbol(node->name);
-				if (!sym) {
-					Report(node, "undeclared identifier: " +
-						std::string(node->name.str, node->name.len));
-					node->baseType = U(BaseTypeIds::Error);
-					break;
-				}
-				// Reuse declaredSymbol as "the Symbol this node
-				// is associated with" for both declarers and
-				// references. Comment in Parser.h scopes the field
-				// to declarers; this is a minor reinterpretation
-				// the rest of the pipeline can rely on.
-				node->declaredSymbol = sym;
-
-				// Pull type shape from the declaring node so we
-				// inherit pointerDepth / isArray, not just baseType.
-				auto it = declSite.find(sym);
-				if (it != declSite.end()) {
-					CopyTypeShape(node, it->second);
-				}
-				else {
-					node->baseType = sym->baseType.load(
-						std::memory_order_relaxed);
-				}
-				break;
-			}
-
-								 // -- Unary / value-producing verbs -----------------
-			case ParseKind::AddressOf: {
-				// One child: the operand. Result is a pointer to
-				// the operand's type.
-				if (node->childCount > 0) {
-					const ParseTreeNode* op = node->children[0];
-					node->baseType = op->baseType;
-					node->isArray = op->isArray;
-					uint32_t depth = uint32_t(op->pointerDepth) + 1;
-					node->pointerDepth = depth > 255 ? 255 : uint8_t(depth);
-				}
-				break;
-			}
-			case ParseKind::Deref: {
-				if (node->childCount > 0) {
-					const ParseTreeNode* op = node->children[0];
-					node->baseType = op->baseType;
-					node->isArray = op->isArray;
-					node->pointerDepth = op->pointerDepth > 0 ?
-						op->pointerDepth - 1 : 0;
-				}
-				break;
-			}
-			case ParseKind::Negate:
-			case ParseKind::UnaryPlus:
-			case ParseKind::Not:
-			case ParseKind::BitNot: {
-				if (node->childCount > 0) {
-					CopyTypeShape(node, node->children[0]);
-				}
-				// !x conceptually returns b; for hello.xm's needs
-				// we don't trip over this -- the literal/numeric
-				// passthrough keeps types consistent enough for
-				// the Reviewer to refine.
-				break;
-			}
-
-			case ParseKind::MemberAccess: {
-				// child[0] is the object; payload `name` is the
-				// member spelling. The one case hello.xm exercises
-				// is .length on an array, which is u64.
-				if (node->childCount > 0 &&
-					node->name.len == 6 &&
-					std::memcmp(node->name.str, "length", 6) == 0 &&
-					node->children[0]->isArray)
-				{
-					node->baseType = U(BaseTypeIds::T_U64);
-					node->pointerDepth = 0;
-					node->isArray = false;
-				}
-				else {
-					// Fields on user types aren't resolved yet;
-					// punt to Unresolved so the Reviewer's later
-					// scan flags it if it matters.
-					node->baseType = U(BaseTypeIds::Unresolved);
-				}
-				break;
-			}
-
-			case ParseKind::Subscript: {
-				// arr[i]: result is the element type of arr.
-				if (node->childCount > 0) {
-					const ParseTreeNode* arr = node->children[0];
-					node->baseType = arr->baseType;
-					node->pointerDepth = arr->pointerDepth;
-					node->isArray = false;
-				}
-				break;
-			}
-
-			case ParseKind::Call: {
-				// child[0] = callee (Ident), child[1] = ArgList.
-				// Take the call's baseType from the callee's
-				// return spec via its declaring node.
-				if (node->childCount == 0) break;
-				const ParseTreeNode* callee = node->children[0];
-				Symbol* sym = callee->declaredSymbol;
-				if (!sym) {
-					node->baseType = U(BaseTypeIds::Unresolved);
-					break;
-				}
-				auto it = declSite.find(sym);
-				if (it == declSite.end()) {
-					node->baseType = U(BaseTypeIds::Unresolved);
-					break;
-				}
-				ParseTreeNode* decl = it->second;
-				ParseTreeNode* retCarrier = nullptr;
-				if (decl->kind == ParseKind::ExternDecl) {
-					retCarrier = FirstChildOfKind(decl,
-						ParseKind::ReturnSpec);
-				}
-				else if (decl->kind == ParseKind::FuncDecl) {
-					retCarrier = FirstChildOfKind(decl,
-						ParseKind::Type);
-				}
-				if (retCarrier) {
-					CopyTypeShape(node, retCarrier);
-				}
-				else {
-					// No return spec: void.
-				}
-				break;
-			}
-
-			case ParseKind::Assign: {
-				// rhs's type is the assignment's type.
-				if (node->childCount >= 2) {
-					CopyTypeShape(node, node->children[1]);
-				}
-				break;
-			}
-
-			case ParseKind::ArgList: {
-				break;
-			}
-
-			case ParseKind::BinOp: {
-				// Numeric binops take the wider operand type. Not
-				// exercised by hello.xm; left as a hook.
-				if (node->childCount >= 2) {
-					CopyTypeShape(node, node->children[0]);
-				}
-				break;
-			}
-
-			default:
-				// Conjunctions / structural nodes fall through;
-				// MorphStmt handles the ones we know about.
-				break;
-			}
+			return 0;
 		}
 
 		// =============================================================
-		// Helpers
+		// Utility helpers
 		// =============================================================
 
-		Symbol* MorpherState::DeclareSymbol(InternedString name,
-			AllocationType alloc,
-			ParseTreeNode* declNode)
+		static void CopyTypeShape(ParseTreeNode* dst, const ParseTreeNode* src)
 		{
-			Symbol* sym = symbols.InternSymbol(
-				std::string_view(name.str, name.len),
-				scopeStack.data(),
-				static_cast<uint32_t>(scopeStack.size()));
-			if (!sym) {
-				// SymbolTable rejected the intern -- typically because
-				// the scope path is deeper than the table's configured
-				// maximum. Diagnose and let the caller carry on with
-				// declaredSymbol = nullptr; nothing the Morpher does
-				// later actually requires the Symbol to exist.
-				Report(declNode,
-					"failed to intern symbol '" +
-					std::string(name.str, name.len) +
-					"' (scope path depth " +
-					std::to_string(scopeStack.size()) +
-					" rejected by SymbolTable)");
-				return nullptr;
-			}
-			sym->allocType = alloc;
-			sym->xmoIdx = xmo.index;
-			xmo.ownedSymbols.push_back(sym);
-			declSite[sym] = declNode;
-			declared.push_back(sym);
-			return sym;
-		}
-
-		Symbol* MorpherState::ResolveSymbol(InternedString name)
-		{
-			return symbols.ResolveSymbol(
-				std::string_view(name.str, name.len),
-				scopeStack.data(),
-				static_cast<uint32_t>(scopeStack.size()));
-		}
-
-		void MorpherState::CopyTypeShape(ParseTreeNode* dst,
-			const ParseTreeNode* src)
-		{
-			dst->baseType = src->baseType;
+			dst->baseType     = src->baseType;
 			dst->pointerDepth = src->pointerDepth;
-			dst->isArray = src->isArray;
+			dst->isArray      = src->isArray;
 		}
 
-		ParseTreeNode* MorpherState::FirstChildOfKind(ParseTreeNode* parent,
-			ParseKind k)
+		static ParseTreeNode* FirstChildOfKind(ParseTreeNode* parent, ParseKind k)
 		{
 			for (uint32_t i = 0; i < parent->childCount; ++i) {
 				if (parent->children[i]->kind == k) return parent->children[i];
@@ -664,25 +224,10 @@ namespace xmc
 			return nullptr;
 		}
 
-		uint32_t MorpherState::PushScope(ScopeTypes blockType)
-		{
-			uint32_t id = symbols.AllocScopeId();
-			XmoScope rec;
-			rec.scopeId = id;
-			rec.parentScopeId = scopeStack.empty() ? 0 : scopeStack.back();
-			rec.blockType = static_cast<uint8_t>(blockType);
-			xmo.scopeTree.push_back(rec);
-			scopeStack.push_back(id);
-			return id;
-		}
-
-		void MorpherState::PopScope()
-		{
-			scopeStack.pop_back();
-		}
-
-		void MorpherState::Report(const ParseTreeNode* at,
-			const std::string& msg)
+		static void Report(const ParseTreeNode* at,
+			const std::string& msg,
+			const Xmo& xmo,
+			const CompileJob& job)
 		{
 			oserror << xmo.name << ":" << at->line << ":" << at->col
 				<< ": morph error: " << msg << std::endl;
@@ -690,17 +235,332 @@ namespace xmc
 		}
 
 		// =============================================================
-		// Morpher log
-		//
-		// Same indented tree shape as the parser log so the two can be
-		// diffed side-by-side. Each line ends with the resolved type
-		// in the form "  :: <baseType><stars><[]>". A "Symbols:"
-		// section follows the tree, listing each declared symbol with
-		// its scope path and resolved type.
+		// Symbol helpers
 		// =============================================================
-		std::string MorpherState::FormatType(uint32_t baseType,
-			uint8_t pointerDepth,
-			bool isArray) const
+
+		static Symbol* DeclareSymbol(InternedString name,
+			AllocationType alloc,
+			ParseTreeNode* declNode,
+			Xmo& xmo,
+			SymbolTable& symbols,
+			const CompileJob& job)
+		{
+			std::vector<uint32_t> path;
+			CollectScopePath(declNode->parent, path);
+
+			Symbol* sym = symbols.InternSymbol(
+				std::string_view(name.str, name.len),
+				path.data(),
+				static_cast<uint32_t>(path.size()));
+			if (!sym) {
+				Report(declNode,
+					"failed to intern symbol '" +
+					std::string(name.str, name.len) +
+					"' (scope depth " + std::to_string(path.size()) +
+					" rejected by SymbolTable)",
+					xmo, job);
+				return nullptr;
+			}
+			sym->allocType = alloc;
+			sym->xmoIdx    = xmo.index;
+			sym->declNode  = declNode;
+			xmo.PushOwnedSymbol(sym);  // thread-safe append
+			return sym;
+		}
+
+		static Symbol* ResolveSymbol(InternedString name,
+			ParseTreeNode* atNode,
+			SymbolTable& symbols)
+		{
+			std::vector<uint32_t> path;
+			CollectScopePath(atNode->parent, path);
+			return symbols.ResolveSymbol(
+				std::string_view(name.str, name.len),
+				path.data(),
+				static_cast<uint32_t>(path.size()));
+		}
+
+		// =============================================================
+		// ApplyExprRule — expression-node typing
+		// =============================================================
+		static void ApplyExprRule(ParseTreeNode* n, ExprRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		{
+			switch (rule) {
+
+			case ExprRule::IntLit: {
+				uint64_t v = n->intValue;
+				if      (v <= 0xFFull)         n->baseType = U(BaseTypeIds::T_U8);
+				else if (v <= 0xFFFFull)        n->baseType = U(BaseTypeIds::T_U16);
+				else if (v <= 0xFFFFFFFFull)    n->baseType = U(BaseTypeIds::T_U32);
+				else                            n->baseType = U(BaseTypeIds::T_U64);
+				break;
+			}
+
+			case ExprRule::FloatLit:
+				n->baseType = U(BaseTypeIds::T_F64);
+				break;
+
+			case ExprRule::StringLit:
+				n->baseType = U(BaseTypeIds::T_U8);
+				n->isArray  = true;
+				break;
+
+			case ExprRule::CharLit:
+				n->baseType = U(BaseTypeIds::c8);
+				break;
+
+			case ExprRule::BoolLit:
+				n->baseType = U(BaseTypeIds::b);
+				break;
+
+			case ExprRule::NullLit:
+				n->baseType = U(BaseTypeIds::Null);
+				break;
+
+			case ExprRule::Ident: {
+				Symbol* sym = ResolveSymbol(n->name, n, symbols);
+				if (!sym) {
+					Report(n, "undeclared identifier: " +
+						std::string(n->name.str, n->name.len), xmo, job);
+					n->baseType = U(BaseTypeIds::Error);
+					break;
+				}
+				n->declaredSymbol = sym;
+				// Use sym->declNode to read the declaring node's type shape.
+				ParseTreeNode* dn = sym->declNode;
+				if (dn) {
+					CopyTypeShape(n, dn);
+				}
+				else {
+					n->baseType = sym->baseType.load(std::memory_order_relaxed);
+				}
+				break;
+			}
+
+			case ExprRule::AddressOf:
+				if (n->childCount > 0) {
+					const ParseTreeNode* op = n->children[0];
+					n->baseType     = op->baseType;
+					n->isArray      = op->isArray;
+					uint32_t depth  = uint32_t(op->pointerDepth) + 1;
+					n->pointerDepth = depth > 255 ? 255 : uint8_t(depth);
+				}
+				break;
+
+			case ExprRule::Deref:
+				if (n->childCount > 0) {
+					const ParseTreeNode* op = n->children[0];
+					n->baseType     = op->baseType;
+					n->isArray      = op->isArray;
+					n->pointerDepth = op->pointerDepth > 0 ? op->pointerDepth - 1 : 0;
+				}
+				break;
+
+			case ExprRule::CopyChild0:
+				if (n->childCount > 0) {
+					CopyTypeShape(n, n->children[0]);
+				}
+				break;
+
+			case ExprRule::MemberAccess:
+				if (n->childCount > 0 &&
+					n->name.len == 6 &&
+					std::memcmp(n->name.str, "length", 6) == 0 &&
+					n->children[0]->isArray)
+				{
+					n->baseType     = U(BaseTypeIds::T_U64);
+					n->pointerDepth = 0;
+					n->isArray      = false;
+				}
+				else {
+					n->baseType = U(BaseTypeIds::Unresolved);
+				}
+				break;
+
+			case ExprRule::Call: {
+				// child[0] is the callee Ident (already resolved); get return
+				// type from the declaring ExternDecl / FuncDecl via sym->declNode.
+				if (n->childCount == 0) break;
+				const ParseTreeNode* callee = n->children[0];
+				Symbol* sym = callee->declaredSymbol;
+				if (!sym) { n->baseType = U(BaseTypeIds::Unresolved); break; }
+				ParseTreeNode* decl = sym->declNode;
+				if (!decl)    { n->baseType = U(BaseTypeIds::Unresolved); break; }
+				ParseTreeNode* retCarrier = FirstChildOfKind(decl, ParseKind::ReturnSpec);
+				if (retCarrier) {
+					CopyTypeShape(n, retCarrier);
+				}
+				// No ReturnSpec → void; leave baseType at Unresolved (= no type).
+				break;
+			}
+
+			case ExprRule::ArgList:
+				// No type on ArgList itself; structural pass-through.
+				break;
+
+			default:
+				break;
+			}
+
+			(void)xmo; (void)job; // may not be used in all branches
+		}
+
+		// =============================================================
+		// ApplyNodeRule — declaration and structural nodes
+		// =============================================================
+		static void ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		{
+			switch (rule) {
+
+			case NodeRule::FileNode: {
+				XmoScope rec;
+				rec.scopeId       = n->scopeId;
+				rec.parentScopeId = 0;
+				rec.blockType     = static_cast<uint8_t>(ScopeTypes::File);
+				xmo.PushScopeRecord(rec);
+				break;
+			}
+
+			case NodeRule::TypeNode: {
+				std::string_view kw(n->name.str, n->name.len);
+				n->baseType = U(BaseTypeFromKeyword(kw));
+				break;
+			}
+
+			case NodeRule::ReturnSpecNode: {
+				ParseTreeNode* type = FirstChildOfKind(n, ParseKind::Type);
+				if (type) CopyTypeShape(n, type);
+				break;
+			}
+
+			case NodeRule::ParamNode: {
+				ParseTreeNode* type = FirstChildOfKind(n, ParseKind::Type);
+				if (type) CopyTypeShape(n, type);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				n->declaredSymbol = sym;
+				if (sym) {
+					sym->pointerDepth = n->pointerDepth;
+					sym->isArray      = n->isArray;
+					sym->baseType.store(n->baseType, std::memory_order_relaxed);
+				}
+				break;
+			}
+
+			case NodeRule::ExternDeclNode: {
+				// Record the parameter scope opened by this extern decl.
+				XmoScope rec;
+				rec.scopeId       = n->scopeId;
+				rec.parentScopeId = GetParentScopeId(n->parent);
+				rec.blockType     = static_cast<uint8_t>(ScopeTypes::Function);
+				xmo.PushScopeRecord(rec);
+				// Declare the function symbol in the parent (file) scope.
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				n->declaredSymbol = sym;
+				n->baseType       = U(BaseTypeIds::function);
+				if (sym) {
+					sym->baseType.store(U(BaseTypeIds::function),
+						std::memory_order_relaxed);
+				}
+				break;
+			}
+
+			case NodeRule::FuncDeclNode: {
+				// Record the function scope.
+				XmoScope rec;
+				rec.scopeId       = n->scopeId;
+				rec.parentScopeId = GetParentScopeId(n->parent);
+				rec.blockType     = static_cast<uint8_t>(ScopeTypes::Function);
+				xmo.PushScopeRecord(rec);
+				// Declare the function symbol in the parent (file) scope.
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				n->declaredSymbol = sym;
+				n->baseType       = U(BaseTypeIds::function);
+				if (sym) {
+					sym->baseType.store(U(BaseTypeIds::function),
+						std::memory_order_relaxed);
+				}
+				break;
+			}
+
+			case NodeRule::VarDeclNode: {
+				ParseTreeNode* type = FirstChildOfKind(n, ParseKind::Type);
+				if (type) CopyTypeShape(n, type);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				n->declaredSymbol = sym;
+				if (sym) {
+					sym->pointerDepth = n->pointerDepth;
+					sym->isArray      = n->isArray;
+					sym->baseType.store(n->baseType, std::memory_order_relaxed);
+				}
+				break;
+			}
+
+			case NodeRule::BlockNode: {
+				XmoScope rec;
+				rec.scopeId       = n->scopeId;
+				rec.parentScopeId = GetParentScopeId(n->parent);
+				rec.blockType     = static_cast<uint8_t>(ScopeTypes::Nested);
+				xmo.PushScopeRecord(rec);
+				break;
+			}
+
+			case NodeRule::None:
+			default:
+				break;
+			}
+
+			(void)symbols; // may not be used in all branches
+		}
+
+		// =============================================================
+		// ApplyRule — dispatch to expr or node rule
+		// =============================================================
+		static void ApplyRule(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		{
+			auto k = static_cast<size_t>(n->kind);
+			ExprRule er = (k < std::size(kExprDesc)) ? kExprDesc[k] : ExprRule::None;
+			if (er != ExprRule::None) {
+				ApplyExprRule(n, er, xmo, symbols, job);
+			}
+			else {
+				NodeRule nr = (k < std::size(kNodeDesc)) ? kNodeDesc[k] : NodeRule::None;
+				ApplyNodeRule(n, nr, xmo, symbols, job);
+			}
+		}
+
+		// =============================================================
+		// PropagateUp — walk parent pointers, decrementing pendingChildren.
+		//
+		// For each ancestor: atomically decrement. If this task is NOT the
+		// one that brought the count to zero, stop (another task wins).
+		// If this task IS the winner (fetch_sub returned 1), apply the
+		// ancestor's rule and continue upward.
+		// =============================================================
+		static void PropagateUp(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		{
+			ParseTreeNode* cur = n->parent;
+			while (cur) {
+				// Acquire: see writes from all tasks that resolved siblings.
+				// Release: publish our child's resolved type to the parent rule.
+				uint16_t prev = cur->pendingChildren.fetch_sub(
+					1, std::memory_order_acq_rel);
+				if (prev != 1) return; // not the last child; another task will win
+				// We are the last child — apply this node's rule.
+				ApplyRule(cur, xmo, symbols, job);
+				cur = cur->parent;
+			}
+		}
+
+		// =============================================================
+		// Morpher log
+		// =============================================================
+
+		static std::string FormatType(uint32_t baseType,
+			uint8_t pointerDepth, bool isArray)
 		{
 			std::string out;
 			for (uint8_t i = 0; i < pointerDepth; ++i) out += '*';
@@ -709,42 +569,14 @@ namespace xmc
 			return out;
 		}
 
-		void MorpherState::WriteMorpherLog()
-		{
-			fs::path src(xmo.name);
-			fs::path logPath = src.parent_path() /
-				(src.stem().string() + ".morpher.txt");
-			std::ofstream out(logPath);
-			if (!out) return;
-
-			DumpNode(out, xmo.parseTree, 0);
-
-			out << "\nSymbols:\n";
-			for (Symbol* sym : declared) {
-				out << "  ";
-				out.write(sym->name.str, sym->name.len);
-				out << "  ::  "
-					<< FormatType(
-						sym->baseType.load(std::memory_order_relaxed),
-						sym->pointerDepth, sym->isArray)
-					<< "  ["
-					<< AllocationTypeName(sym->allocType)
-					<< "]  scope=";
-				const uint32_t* path = sym->Path();
-				for (uint32_t i = 0; i < sym->pathLen; ++i) {
-					if (i > 0) out << '.';
-					out << path[i];
-				}
-				out << '\n';
-			}
-		}
-
-		void MorpherState::DumpNode(std::ofstream& out,
-			const ParseTreeNode* n, int depth)
+		static void DumpNode(std::ofstream& out,
+			const ParseTreeNode* n,
+			const std::string& xmoName,
+			int depth)
 		{
 			if (!n) return;
 
-			std::string pos = xmo.name + ":" +
+			std::string pos = xmoName + ":" +
 				std::to_string(n->line) + ":" + std::to_string(n->col);
 			out.write(pos.data(), std::streamsize(pos.size()));
 			for (size_t pad = pos.size(); pad < 24; ++pad) out.put(' ');
@@ -753,7 +585,6 @@ namespace xmc
 
 			out << ParseKindName(n->kind);
 
-			// Identifying payload (mirrors the parser log)
 			switch (n->kind) {
 			case ParseKind::ExternDecl:
 			case ParseKind::FuncDecl:
@@ -782,16 +613,44 @@ namespace xmc
 				break;
 			}
 
-			// Resolved type, if interesting
-			if (n->baseType != U(BaseTypeIds::Unresolved))
-			{
+			if (n->baseType != U(BaseTypeIds::Unresolved)) {
 				out << "  ::  "
 					<< FormatType(n->baseType, n->pointerDepth, n->isArray);
 			}
 			out << '\n';
 
 			for (uint32_t i = 0; i < n->childCount; ++i) {
-				DumpNode(out, n->children[i], depth + 1);
+				DumpNode(out, n->children[i], xmoName, depth + 1);
+			}
+		}
+
+		static void WriteMorpherLog(const Xmo& xmo)
+		{
+			fs::path src(xmo.name);
+			fs::path logPath = src.parent_path() /
+				(src.stem().string() + ".morpher.txt");
+			std::ofstream out(logPath);
+			if (!out) return;
+
+			DumpNode(out, xmo.parseTree, xmo.name, 0);
+
+			out << "\nSymbols:\n";
+			for (const Symbol* sym : xmo.ownedSymbols) {
+				out << "  ";
+				out.write(sym->name.str, sym->name.len);
+				out << "  ::  "
+					<< FormatType(
+						sym->baseType.load(std::memory_order_relaxed),
+						sym->pointerDepth, sym->isArray)
+					<< "  ["
+					<< AllocationTypeName(sym->allocType)
+					<< "]  scope=";
+				const uint32_t* p = sym->Path();
+				for (uint32_t i = 0; i < sym->pathLen; ++i) {
+					if (i > 0) out << '.';
+					out << p[i];
+				}
+				out << '\n';
 			}
 		}
 
@@ -807,28 +666,25 @@ namespace xmc
 		SymbolTable&      symbols,
 		const CompileJob& job)
 	{
-		// Per-noun stub. The Parser submits this as a fire-and-forget
-		// pool task when it completes a noun node. For now we defer
-		// all real work to MorphTree; individual noun morphing will be
-		// filled in incrementally as tests require it.
-		(void)node;
-		(void)xmo;
-		(void)symbols;
-		(void)job;
+		ApplyRule(node, xmo, symbols, job);
+		PropagateUp(node, xmo, symbols, job);
 	}
 
 	void Morpher::MorphTree(
-		Xmo&              xmo,
-		SymbolTable&      symbols,
-		const CompileJob& job)
+		Xmo&                               xmo,
+		SymbolTable&                       symbols,
+		const CompileJob&                  job,
+		const std::vector<ParseTreeNode*>& leaves)
 	{
-		if (!xmo.parseTree) return;
-
-		MorpherState st(xmo, symbols, job);
-		st.MorphFile(xmo.parseTree);
+		// Process leaves in the order the Parser collected them. All
+		// pendingChildren are correctly initialised at this point because
+		// Drive() has returned and all popNode() calls have completed.
+		for (ParseTreeNode* n : leaves) {
+			MorphNoun(n, xmo, symbols, job);
+		}
 
 		if (job.MorpherLog) {
-			st.WriteMorpherLog();
+			WriteMorpherLog(xmo);
 		}
 	}
 

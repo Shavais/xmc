@@ -213,7 +213,10 @@ namespace xmc
                 }
                 for (auto& xmo : s.xmos) {
                     if (xmo->state.load(std::memory_order_relaxed) == XmoState::Full) {
-                        Morpher::MorphTree(*xmo, s.symbols, s.job);
+                        // Collect leaves by walking the loaded parse tree.
+                        std::vector<ParseTreeNode*> leaves;
+                        // TODO: implement tree walk to collect leaves here
+                        Morpher::MorphTree(*xmo, s.symbols, s.job, leaves);
                     }
                 }
             }

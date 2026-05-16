@@ -12,7 +12,8 @@
 
 namespace xmc
 {
-	class Xmo;   // Symbol holds a back-pointer to its origin xmo
+	class Xmo;          // Symbol holds a back-pointer to its origin xmo
+	struct ParseTreeNode; // Symbol holds a pointer to its declaring node
 
 	// ----------------------------------------------------------------------
 	// InternedString
@@ -93,6 +94,13 @@ namespace xmc
 		// these to readers.
 		uint8_t               pointerDepth;//  1   leading '*' count
 		bool                  isArray;     //  1   trailing "[]"
+
+		// The ParseTreeNode that declared this symbol (ExternDecl, FuncDecl,
+		// Param, VarDecl). Set once by DeclareSymbol; read by Call/Ident
+		// resolution to get the callee's ReturnSpec without a per-run map.
+		// Safe without a lock: written once before the Symbol is published
+		// (via the atomic store of baseType) and never written again.
+		ParseTreeNode*        declNode = nullptr;
 
 		// Inline path storage; spills to overflow_path when pathLen
 		// exceeds SYMBOL_INLINE_DEPTH.

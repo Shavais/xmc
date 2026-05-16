@@ -16,6 +16,7 @@
 //
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string_view>
 
@@ -129,6 +130,17 @@ namespace xmc
 
         uint8_t         pointerDepth = 0; // Type: leading '*' count
         bool            isArray      = false; // Type: trailing "[]"
+
+        // Morpher coordination. Initialised to childCount by the Parser when the
+        // node is committed. The Morpher atomically decrements it as each child
+        // resolves; the task that brings it to zero applies the parent's rule.
+        std::atomic<uint16_t> pendingChildren{0};
+
+        // scopeId: pre-allocated by the Parser for scope-opening nodes
+        // (File, ExternDecl, FuncDecl, Block). Zero for all other nodes.
+        // The Morpher reads this when collecting a symbol's scope path by
+        // walking parent pointers rather than maintaining its own scope stack.
+        uint32_t        scopeId = 0;
 
         // Coder fills these; Emitter consumes. Empty until the Coder runs.
         uint16_t*       codeBlocks     = nullptr;

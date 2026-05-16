@@ -106,6 +106,10 @@ struct ParseCtx {
     BS::thread_pool<>& pool;
     const CompileJob&  job;
 
+    // Leaf nodes collected during Drive(). Drained by Morpher::MorphTree after
+    // Drive() returns — all pendingChildren have been initialised by then.
+    std::vector<ParseTreeNode*> leaves;
+
     // Source cursor
     uint32_t pos  = 0;
     uint32_t line = 1;
@@ -192,6 +196,15 @@ struct ParseCtx {
         }
     }
 
+    // Add a leaf node that was created inline (not via pushNode/popNode).
+    // Sets parent, adds to current frame's children, and records it for
+    // Morpher::MorphTree to process after Drive() completes.
+    void addLeaf(ParseTreeNode* leaf)
+    {
+        addChild(leaf);
+        leaves.push_back(leaf);
+    }
+
     // Commit pending children to the arena, then pop.
     // Returns the completed node.
     ParseTreeNode* popNode()
@@ -205,6 +218,14 @@ struct ParseCtx {
             std::memcpy(n->children, f.children.data(),
                         n->childCount * sizeof(ParseTreeNode*));
         }
+        // Initialise pendingChildren so the Morpher can use O(1) "is this
+        // parent ready?" checks via atomic decrement-and-compare.
+        n->pendingChildren.store(uint16_t(n->childCount), std::memory_order_relaxed);
+        // Leaf nodes (no children) are recorded for Morpher::MorphTree to
+        // process after Drive() returns and all pendingChildren are set.
+        if (n->childCount == 0) {
+            leaves.push_back(n);
+        }
         stack.pop_back();
         return n;
     }
@@ -217,6 +238,16 @@ struct ParseCtx {
         n->line    = tokenLine;
         n->col     = tokenCol;
         n->srcStart = tokenStart;
+        // Pre-allocate a scope ID for scope-opening nodes. The Morpher reads
+        // scopeId when collecting scope paths via parent-pointer walks, so the
+        // ID must exist before the node's children are parsed.
+        if (kind == ParseKind::File    ||
+            kind == ParseKind::ExternDecl ||
+            kind == ParseKind::FuncDecl   ||
+            kind == ParseKind::Block)
+        {
+            n->scopeId = symbols.AllocScopeId();
+        }
         return n;
     }
 
@@ -409,13 +440,16 @@ static void AttachReturnSpec(ParseCtx&      ctx,
     ret->srcStart= ctx.tokenStart;
 
     // Wire type as sole child of ret.
-    ret->childCount = 1;
-    ret->children   = ctx.xmo.arena.NewArray<ParseTreeNode*>(1);
-    ret->children[0]= type;
-    type->parent    = ret;
+    ret->childCount      = 1;
+    ret->pendingChildren.store(1, std::memory_order_relaxed);
+    ret->children        = ctx.xmo.arena.NewArray<ParseTreeNode*>(1);
+    ret->children[0]     = type;
+    type->parent         = ret;
 
-    // Attach ret to ExternDecl (current stack top).
+    // Attach ret to the ExternDecl/FuncDecl on the stack top.
     ctx.addChild(ret);
+    // type is a leaf — record it for Morpher::MorphTree.
+    ctx.leaves.push_back(type);
 }
 
 static uint16_t DispatchIdent(ParseCtx& ctx)
@@ -659,7 +693,7 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
             ctx.pushNode(call);
             auto* callee = ctx.allocNode(ParseKind::Ident);
             callee->name = ctx.symbols.InternString(tok);
-            ctx.addChild(callee);
+            ctx.addLeaf(callee); // leaf: skip push/pop, seed morph queue
             auto* args = ctx.allocNode(ParseKind::ArgList);
             ctx.addChild(args);
             ctx.pushNode(args);
@@ -672,9 +706,9 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
             ctx.addChild(vd);
             ctx.pushNode(vd);
             auto* ty = ctx.allocNode(ParseKind::Type);
-            ty->name   = ctx.symbols.InternString(tok);
+            ty->name    = ctx.symbols.InternString(tok);
             ty->isArray = true;
-            ctx.addChild(ty); // added to VarDecl's pending children
+            ctx.addLeaf(ty); // leaf: seed morph queue directly
             return S_VARDECL_LBRACK;
         }
         if (trigger == ' ' || trigger == '\t' || trigger == '\r' || trigger == '\n') {
@@ -713,14 +747,14 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
             ctx.pushNode(call);
             auto* callee = ctx.allocNode(ParseKind::Ident);
             callee->name = ctx.symbols.InternString(tok);
-            ctx.addChild(callee);
+            ctx.addLeaf(callee); // leaf: seed morph queue directly
             auto* args = ctx.allocNode(ParseKind::ArgList);
             ctx.addChild(args);
             ctx.pushNode(args);
             return S_CALL_ARGS;
         }
         // Bare ident or keyword as init value.
-        ctx.addChild(MakeIdentOrLit(ctx, tok));
+        ctx.addLeaf(MakeIdentOrLit(ctx, tok));
         return S_AFTER_CALL; // skip WS then ';' → pop VarDecl → S_BLOCK
     }
 
@@ -742,12 +776,12 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
             ctx.pushNode(ma);
             auto* obj = ctx.allocNode(ParseKind::Ident);
             obj->name = ctx.symbols.InternString(tok);
-            ctx.addChild(obj); // adds to MemberAccess frame
-            ctx.advance();     // consume '.'
+            ctx.addLeaf(obj); // leaf: seed morph queue directly
+            ctx.advance();    // consume '.'
             return S_ARG_MEMBER_WAIT;
         }
 
-        ctx.addChild(MakeIdentOrLit(ctx, tok));
+        ctx.addLeaf(MakeIdentOrLit(ctx, tok));
 
         if (trigger == ',') {
             ctx.advance(); // consume ','
@@ -800,7 +834,7 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
 
         auto* operand = ctx.allocNode(ParseKind::Ident);
         operand->name = ctx.symbols.InternString(tok);
-        ctx.addChild(operand);
+        ctx.addLeaf(operand); // leaf: seed morph queue directly
         if (ctx.current() && ctx.current()->kind == ParseKind::AddressOf)
             ctx.popNode(); // AddressOf → committed to ArgList or VarDecl
 
@@ -828,7 +862,7 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
 
         auto* lit = ctx.allocNode(ParseKind::IntLit);
         lit->intValue = ParseIntTok(tok);
-        ctx.addChild(lit);
+        ctx.addLeaf(lit); // leaf: seed morph queue directly
 
         if (trigger == ',') {
             ctx.advance();
@@ -1117,9 +1151,9 @@ static void OnEnterState(uint16_t fromState, uint16_t toState,
             ctx.addChild(vd);
             ctx.pushNode(vd);
             auto* ty = ctx.allocNode(ParseKind::Type);
-            ty->name   = ctx.pending;
+            ty->name    = ctx.pending;
             ctx.pending = {};
-            ctx.addChild(ty); // leaf: added to VarDecl frame, not pushed
+            ctx.addLeaf(ty); // leaf: seed morph queue directly
         }
         ctx.startToken();
         break;
@@ -1142,7 +1176,7 @@ static void OnEnterState(uint16_t fromState, uint16_t toState,
             auto* callee = ctx.allocNode(ParseKind::Ident);
             callee->name = ctx.pending;
             ctx.pending  = {};
-            ctx.addChild(callee);
+            ctx.addLeaf(callee); // leaf: seed morph queue directly
             auto* args = ctx.allocNode(ParseKind::ArgList);
             ctx.addChild(args);
             ctx.pushNode(args);
@@ -1286,7 +1320,7 @@ static void OnLeaveState(uint16_t fromState, uint16_t toState,
         auto* lit      = ctx.allocNode(ParseKind::StringLit);
         lit->srcStart  = ctx.tokenStart + 1;                    // skip opening '"'
         lit->srcLen    = ctx.pos - ctx.tokenStart - 1;          // content length
-        ctx.addChild(lit);
+        ctx.addLeaf(lit); // leaf: seed morph queue directly
     }
 }
 
@@ -1416,10 +1450,10 @@ void Parser::Parse(
         EmitParserLog(xmo.parseTree, ctx.stack, xmo.name, source);
     }
 
-    // Run the whole-tree morpher pass (waits for any outstanding MorphNoun
-    // tasks to finish internally via pool.wait() before returning).
+    // Process the collected leaf nodes and write the morpher log.
+    // Drive() has completed, so all pendingChildren are correctly initialised.
     if (!job.ErrorOccurred.load(std::memory_order_relaxed)) {
-        Morpher::MorphTree(xmo, symbols, job);
+        Morpher::MorphTree(xmo, symbols, job, ctx.leaves);
     }
 }
 

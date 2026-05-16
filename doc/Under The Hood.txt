@@ -92,29 +92,36 @@ suitable for golden-file diffing in suite tests.
 1c. Morpher
 -----------
 
-The merged Typer + Refiner. The Morpher runs one thread per source file. It processes a per-file work queue of parse-tree
-nodes; each entry is a node whose type or refinement state may have changed enough for propagation to its neighbors to be
-worth reattempting. The work queue is fed initially by the Parser (newly created leaves), and afterward by the Morpher itself
-as propagation discovers further work. When the queue is empty the thread sleeps on a condition variable.
+The merged Typer + Refiner. The Morpher's initial typing pass runs as a sequential leaf drain: the Parser collects every
+leaf node (childCount == 0) into a local vector during Drive(), then calls Morpher::MorphTree after Drive() returns. At
+that point all pendingChildren counters have been correctly initialised by popNode(), so processing the leaves in
+collection order is safe and produces a deterministic, correct bottom-up traversal. MorphTree calls MorphNoun for each
+leaf in turn; MorphNoun applies the leaf's typing rule then propagates upward through parent pointers.
 
-Propagation is the Morpher's only output mechanism. When a node resolves further — its baseType narrows from Unresolved to a
-concrete type, or a bit moves between minrmask and maxrmask — the Morpher walks the parent pointer up, asking each ancestor
-whether it can resolve further given the change at the child, and pushing those that can onto the work queue. Some nodes
-declare symbols; when one of those resolves, the Morpher iterates the symbol's subscriber list, and for each subscriber pushes
-work onto the appropriate file's morpher work queue (see §2c on file-boundary handling). Type inference and refinement
-narrowing are interleaved in this single propagation mechanism, because setting a structural refinement bit (Variant, Arc,
-Concurrent, Fluid) is itself a type-level decision: a list whose elements gain Variant has effectively changed shape, and a
-type whose Arc bit goes on has different copy semantics than the same type without it.
+The intended final design submits each MorphNoun as a pool task (eliminating the leaf vector: the pool IS the queue).
+That design is deferred pending implementation of the subscriber mechanism described in §2c: without it, Ident tasks
+may run before the ExternDecl or FuncDecl tasks that declare the referenced symbols, causing spurious resolution
+failures. The pendingChildren field and the atomic fetch_sub pattern in PropagateUp are already in place for the
+concurrent variant; enabling it is a matter of changing leaf collection into pool task submission and letting
+ResolveSymbol return a pending/subscribed result rather than an error.
 
-The Morpher never descends the tree. It processes a node from the work queue, walks up parent pointers as far as further
-resolution is possible, and stops. Downward walks of already-established nodes belong to the Reviewer, Coder, and Emitter.
+Propagation is the Morpher's only output mechanism. When a node resolves — its baseType narrows from Unresolved to a
+concrete type, or a bit moves between minrmask and maxrmask — the Morpher walks up via parent pointers, applying each
+ancestor's typing rule once all of its children have resolved. Some nodes declare symbols; when one of those resolves, the
+Morpher iterates the symbol's subscriber list, and for each subscriber pushes work onto the appropriate file's pool (see
+§2c on file-boundary handling). Type inference and refinement narrowing are interleaved in this single propagation
+mechanism, because setting a structural refinement bit (Variant, Arc, Concurrent, Fluid) is itself a type-level decision.
 
-pendingChildren counter: each ParseTreeNode carries a uint16_t pendingChildren, initialised to childCount when the Parser
-commits the node's child array. The Morpher decrements it when each child resolves. When it reaches zero the node is ready
-for its own typing rule and is pushed onto the work queue. This makes the "is this parent ready?" question O(1) — a single
-decrement and compare — with no scan of children. When a node is dequeued (pendingChildren == 0), the Morpher reads the
-children's current types and refinements to derive the parent's type. That read is the productive one; the counter exists
-solely to avoid repeating it on every upward step before all children are in.
+The Morpher never descends the tree. Starting from a leaf, it walks up parent pointers as far as resolution is possible,
+and stops. Downward walks of already-established nodes belong to the Reviewer, Coder, and Emitter.
+
+pendingChildren counter: each ParseTreeNode carries a std::atomic<uint16_t> pendingChildren, initialised to childCount
+when the Parser commits the node's child array. Within PropagateUp, the winning task uses
+fetch_sub(1, acq_rel) == 1 to detect when it is the last child to resolve and therefore the one responsible for applying
+the parent's typing rule. The counter is atomic because multiple pool tasks may race to decrement different children of
+the same parent. baseType, minrmask, and maxrmask on each node are plain (non-atomic): the winning fetch_sub (with
+acq_rel ordering) synchronizes the winning task's subsequent rule application with all preceding child writes, and after
+that point only the winning task touches those fields during the initial pass.
 
 The pendingChildren counter covers the initial bottom-up typing pass. Subsequent re-propagation (e.g. a symbol's type
 narrows after its use sites were already typed) is handled by the subscriber notification mechanism described in §2c, which
@@ -143,11 +150,6 @@ and marks the offending node's baseType as Error so dependents propagate the fai
 Conditions that merely haven't resolved yet are not errors and produce no output. When the project file requests a MorpherLog,
 the Morpher writes a record of each propagation step it took.
 
-[IMPLEMENTATION STATUS] The work-queue + upward-propagation model is the committed design. The current Morpher.cpp contains
-a placeholder MorphTree that does a top-down recursive descent — this is wrong relative to the design and will be replaced.
-MorphNoun is currently a stub. The pendingChildren field does not yet exist on ParseTreeNode. The Parser does not yet
-pre-allocate scope IDs or push leaves onto the Morpher queue. These are the next implementation steps before the Morpher
-can be considered functional.
 
 1d. Pipeline barrier
 --------------------
@@ -231,34 +233,38 @@ ParseTreeNode (allocated from the per-file Xmo::arena, never freed individually)
     kind             — enum tag identifying the construct
     parent           — back-pointer up the tree
     children         — pointers to child nodes (also in arena)
-    baseType         — u32; one of BaseTypeIds
-    minrmask         — u8; refinement bits known to apply
-    maxrmask         — u8; refinement bits still permitted
-    declaredSymbol   — for declaration nodes, the Symbol declared
+    baseType         — u32; one of BaseTypeIds; written by the Morpher
+    minrmask         — u8; refinement bits known to apply; written by the Morpher
+    maxrmask         — u8; refinement bits still permitted; written by the Morpher
+    declaredSymbol   — for declaration nodes, the Symbol declared; written by the Morpher
+    pendingChildren  — std::atomic<uint16_t>; set to childCount by the Parser, decremented atomically by the Morpher
+    scopeId          — u32; pre-allocated by the Parser for scope-opening nodes (File, ExternDecl, FuncDecl, Block)
     payload          — kind-specific union (literal value, call args, function metadata, etc.)
-    codeBlocks       — vector<uint16_t>; populated by the Coder, empty pre-Coder, consumed by the Emitter
+    codeBlocks       — uint16_t[]; populated by the Coder, empty pre-Coder, consumed by the Emitter
 
-The fields are plain (non-atomic) because per-file morphing is single-threaded — see §2b. Locality matters during the
-morph walks (the tree is touched in roughly tree order through the entire pipeline), which is why ParseTreeNode lives in
-the per-file Arena and not in some side table.
+Most fields are plain (non-atomic): each is written by exactly one pipeline stage before the next stage reads it.
+pendingChildren is std::atomic<uint16_t> in anticipation of the concurrent Morpher variant described in §2b; today it
+is accessed only from one thread at a time, so the atomicity is logically unnecessary but costs nothing. ParseTreeNode
+lives in the per-file Arena (not a side table) for locality during tree walks through the entire pipeline.
 
 2b. Threading and synchronization
 ---------------------------------
 
-The Morpher uses one thread per source file, with synchronization at file boundaries rather than at every parse node.
-Within a file, propagation is single-threaded over that file's parse tree, so baseType, minrmask, and maxrmask need no
-atomic protection. The synchronization that does exist lives at the symbol/subscriber index — the meeting point where one
-file's morpher communicates a resolution to another file's morpher — and on the per-file morpher work queues, which are
-written by foreign threads (when a remote symbol resolves and propagation reaches a local subscriber) and read by the
-file's own morpher thread. Each work queue is a lock-free MPSC structure paired with a condition variable; foreign writers
-push and signal, the local morpher pops and processes, sleeping on the condvar when the queue is empty.
+The Morpher currently runs single-threaded within each file. The Parser collects leaf nodes into a vector during Drive()
+and passes that vector to MorphTree after Drive() returns. MorphTree calls MorphNoun sequentially for each leaf. Because
+Drive() has fully completed before any MorphNoun runs, all pendingChildren counters on every node are correctly
+initialised (via popNode), and the sequential drain processes each parent exactly once — the atomic fetch_sub in
+PropagateUp is correct whether one or many threads use it, so the current single-threaded use is just unused atomicity.
 
-A more parallel design — atomics on every parse-node field, one threadpool task per work-queue entry — was considered and
-deferred. It has theoretical appeal (every node can be touched by any thread, with the Morpher's work decomposed into
-fine-grained tasks), but the per-task scheduling overhead probably overwhelms the per-task work for the kind of short
-propagations the Morpher does, and per-node atomics cost on every load and store regardless of contention. The simpler
-per-file-thread design is the current commitment; the more parallel variant would only become attractive on hardware where
-intra-file propagation is wide and concurrent enough to amortize task dispatch.
+The parallel variant (one pool task per leaf) is the intended design once the subscriber mechanism in §2c is
+implemented. Without it, Ident tasks race with ExternDecl tasks and may resolve before the referenced symbol is declared.
+The per-Xmo mutex (Xmo::morphMtx_) guards ownedSymbols and scopeTree for the concurrent case; Symbol::declNode
+replaces any per-run declSite map for the same reason.
+
+File-level parallelism is the current source of concurrency: one pool task per source file, running the Parser and
+MorphTree for that file. This is the only concurrency active today. Cross-file propagation — where a symbol declared
+in one xmo is used in another — is handled by the subscriber index described in §2c; that mechanism is not yet
+implemented, so the compiler currently processes single-file projects only.
 
 2c. Resolution flow and the subscriber index
 --------------------------------------------

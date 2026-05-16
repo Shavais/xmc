@@ -24,20 +24,45 @@
 .\hello.xm:15:17              Param  exitCode : rcx  ::  u32
 .\hello.xm:15:17                Type  ::  u32
 .\hello.xm:20:1           FuncDecl  main  ::  function
-.\hello.xm:20:1             ReturnSpec
-.\hello.xm:20:1               Type
+.\hello.xm:20:1             ReturnSpec  ::  i32
+.\hello.xm:20:1               Type  ::  i32
 .\hello.xm:20:9             ParamList
 .\hello.xm:20:12            Block
+.\hello.xm:21:5               VarDecl  h  ::  u64
+.\hello.xm:21:5                 Type  ::  u64
+.\hello.xm:21:13                Call  ::  u64
+.\hello.xm:21:13                  Ident  GetStdHandle  ::  function
+.\hello.xm:21:13                  ArgList
+.\hello.xm:21:26                    IntLit  ::  u32
+.\hello.xm:23:5               VarDecl  msg  ::  u8[]
+.\hello.xm:23:5                 Type  ::  u8[]
+.\hello.xm:23:16                StringLit  ::  u8[]
+.\hello.xm:24:5               VarDecl  written  ::  u64
+.\hello.xm:24:5                 Type  ::  u64
+.\hello.xm:26:5               ExprStmt
+.\hello.xm:26:5                 Call  ::  b
+.\hello.xm:26:5                   Ident  WriteFile  ::  function
+.\hello.xm:26:5                   ArgList
+.\hello.xm:26:15                    Ident  h  ::  u64
+.\hello.xm:26:18                    Ident  msg  ::  u8[]
+.\hello.xm:26:23                    MemberAccess  length  ::  u64
+.\hello.xm:26:23                      Ident  msg  ::  u8[]
+.\hello.xm:26:27                    AddressOf  ::  *u64
+.\hello.xm:26:36                      Ident  written  ::  u64
+.\hello.xm:26:45                    NullLit  ::  null
 
 Symbols:
-  WriteFile  ::  function  [stack]  scope=3
-  handle  ::  u64  [stack]  scope=3.4
-  buffer  ::  *u8  [stack]  scope=3.4
-  bytesToWrite  ::  u32  [stack]  scope=3.4
-  bytesWritten  ::  *u32  [stack]  scope=3.4
-  overlapped  ::  *u8  [stack]  scope=3.4
-  GetStdHandle  ::  function  [stack]  scope=3
-  stdHandleId  ::  i32  [stack]  scope=3.5
-  ExitProcess  ::  function  [stack]  scope=3
-  exitCode  ::  u32  [stack]  scope=3.6
-  main  ::  function  [stack]  scope=3
+  handle  ::  u64  [stack]  scope=1.2
+  buffer  ::  *u8  [stack]  scope=1.2
+  bytesToWrite  ::  u32  [stack]  scope=1.2
+  bytesWritten  ::  *u32  [stack]  scope=1.2
+  overlapped  ::  *u8  [stack]  scope=1.2
+  WriteFile  ::  function  [stack]  scope=1
+  stdHandleId  ::  i32  [stack]  scope=1.5
+  GetStdHandle  ::  function  [stack]  scope=1
+  exitCode  ::  u32  [stack]  scope=1.6
+  ExitProcess  ::  function  [stack]  scope=1
+  h  ::  u64  [stack]  scope=1.7.8
+  msg  ::  u8[]  [stack]  scope=1.7.8
+  written  ::  u64  [stack]  scope=1.7.8
+  main  ::  function  [stack]  scope=1

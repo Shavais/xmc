@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -214,6 +215,25 @@ namespace xmc
 		void ResetForRegeneration();
 
 		// -------------------------------------------------------------
+		// Morpher registration helpers (thread-safe, called from pool tasks)
+		// -------------------------------------------------------------
+
+		// Appends sym to ownedSymbols under morphMtx_. Called from
+		// DeclareSymbol which may run on any pool worker.
+		void PushOwnedSymbol(Symbol* sym)
+		{
+			std::lock_guard lk(morphMtx_);
+			ownedSymbols.push_back(sym);
+		}
+
+		// Appends rec to scopeTree under morphMtx_. Called from
+		// ApplyNodeRule for scope-opening nodes.
+		void PushScopeRecord(const XmoScope& rec)
+		{
+			std::lock_guard lk(morphMtx_);
+			scopeTree.push_back(rec);
+		}
+
 		// Dependency graph mutation
 		//
 		// These are called during Parser/Morpher as references and
@@ -282,6 +302,11 @@ namespace xmc
 		std::unordered_map<XmoKey, std::unordered_set<SymbolKey, SymbolKeyHash>, XmoKeyHash> importsOf;
 
 	private:
+		// Guards ownedSymbols and scopeTree during the Morpher pass.
+		// Multiple pool tasks may call DeclareSymbol or push XmoScope
+		// records concurrently for the same Xmo.
+		mutable std::mutex morphMtx_;
+
 		// Guards dependency-graph mutation. Pipeline stages may call
 		// RecordImport/RecordObserver concurrently for the same xmo
 		// when resolving cross-xmo references.
