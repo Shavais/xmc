@@ -152,13 +152,47 @@ enum StateIdx : uint16_t {
 
     // ---- Block body (brace-depth scanner) -----------------------------------
     //
-    // Minimal scanner: all characters are SN_SELF. OnEnterState tracks brace
-    // depth and transitions back to S_FILE when the matching '}' is consumed.
-    // Full statement parsing will be added incrementally.
+    // S_BLOCK is now the statement-start dispatcher.
+    // CC_RBRACE / CC_LBRACE still map to SN_SELF so the existing brace-depth
+    // logic in OnEnterState keeps working for the closing '}'.
 
-    S_BLOCK                  = 28, // brace-depth scanner; CC_NULL → error
+    S_BLOCK                  = 28, // start of statement inside a function body
 
-    NUM_STATES               = 29,
+    // ---- Block statements ---------------------------------------------------
+
+    S_STMT_IDENT             = 29, // scan first ident of stmt (type or funcname)
+    S_STMT_AFTER_SPACE       = 30, // after space: letter→VarDecl, '('→ExprStmt call
+
+    // ---- VarDecl ------------------------------------------------------------
+
+    S_VARDECL_LBRACK         = 31, // sitting on '[' after array-type dispatch
+    S_VARDECL_RBRACK_WAIT    = 32, // consumed '['; expect ']'
+    S_VARDECL_NAME_WAIT      = 33, // skip WS before variable name
+    S_VARDECL_NAME           = 34, // scan variable name
+    S_VARDECL_AFTER_NAME     = 35, // skip WS; '=' or ';'
+    S_INIT_WAIT              = 36, // skip WS after '='; start of init expr
+
+    // ---- Init expression ----------------------------------------------------
+
+    S_INIT_IDENT             = 37, // scan ident in init (may open a Call)
+    S_INIT_STRLIT            = 38, // inside "..." string literal
+
+    // ---- Shared call argument parsing ---------------------------------------
+
+    S_CALL_ARGS              = 39, // start of next argument (or closing ')')
+    S_ARG_IDENT              = 40, // scan ident in arg (Ident / NullLit / BoolLit)
+    S_ARG_AFTER_IDENT        = 41, // skip WS after arg ident; ',' or ')'
+    S_ARG_MEMBER_WAIT        = 42, // after '.'; skip WS before member ident
+    S_ARG_MEMBER_IDENT       = 43, // scan member name
+    S_ARG_ADDR_WAIT          = 44, // after '&'; skip WS before ident
+    S_ARG_ADDR_IDENT         = 45, // scan ident after '&'
+    S_ARG_NUMLIT             = 46, // scan numeric literal (decimal or 0x hex)
+
+    // ---- Post-expression ----------------------------------------------------
+
+    S_AFTER_CALL             = 47, // after ')' or other expr end; skip WS → ';'
+
+    NUM_STATES               = 48,
 };
 
 // ---------------------------------------------------------------------------
@@ -570,16 +604,271 @@ inline constexpr NestState kStates[NUM_STATES] = {
     }(),
 
     // -----------------------------------------------------------------------
-    // S_BLOCK (28) — brace-depth scanner for function bodies
+    // S_BLOCK (28) — statement dispatcher for function bodies
     //
-    // All character classes map to SN_SELF; OnEnterState tracks brace depth
-    // and switches ctx.state to S_FILE when the matching '}' is consumed.
-    // CC_NULL stays SN_ERROR — EOF inside a block is an error.
+    // Skips whitespace and comments.  Letters begin a statement.  '}' still
+    // maps to SN_SELF so the existing brace-depth counter in OnEnterState
+    // closes the Block and FuncDecl when the depth reaches zero.
     // -----------------------------------------------------------------------
     []() constexpr {
-        auto s = MkState(0, "block body (unexpected end of file inside block)");
+        auto s = MkState(NS_SKIP_WS | NS_SKIP_COMMENTS, "statement or '}'");
+        s.next[CC_LETTER] = S_STMT_IDENT;
+        s.next[CC_RBRACE] = SN_SELF;   // close-block via brace-depth counter
+        s.next[CC_LBRACE] = SN_SELF;   // nested brace (increments depth)
+        s.next[CC_NULL]   = SN_ERROR;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_STMT_IDENT (29) — scanning the first identifier of a statement
+    //
+    // Dispatch on '(' → ExprStmt / Call (this ident is the function name).
+    // Dispatch on '[' → VarDecl with array type (this ident is the type).
+    // Dispatch on ' ' → save as pending; S_STMT_AFTER_SPACE resolves later.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "statement identifier, '(', '[', or space");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        s.next[CC_LPAREN] = SN_DISPATCH;
+        s.next[CC_LBRACK] = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_STMT_AFTER_SPACE (30) — skip WS after the first statement ident
+    //
+    // letter → pending is the type name → VarDecl name scan.
+    // '('    → pending is a function name → ExprStmt / Call.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "variable name or '(' for function call");
+        s.next[CC_LETTER] = S_VARDECL_NAME;
+        s.next[CC_LPAREN] = S_CALL_ARGS;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_LBRACK (31) — sitting on '[' after array-type dispatch
+    // (Drive did not advance; we consume '[' here.)
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "'[' for array type");
+        s.next[CC_LBRACK] = S_VARDECL_RBRACK_WAIT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_RBRACK_WAIT (32) — consumed '['; expect ']'
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "']' to close array type");
+        s.next[CC_RBRACK] = S_VARDECL_NAME_WAIT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_NAME_WAIT (33) — skip WS before variable name
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "variable name");
+        s.next[CC_LETTER] = S_VARDECL_NAME;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_NAME (34) — scanning the variable name
+    //
+    // Dispatch on ' ', '=', ';' → name complete; go to S_VARDECL_AFTER_NAME.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "variable name, ';', '=', or space");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_SEMI]   = SN_DISPATCH;
+        s.next[CC_EQUALS] = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_AFTER_NAME (35) — skip WS; '=' starts init, ';' ends decl
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS | NS_SKIP_COMMENTS,
+                         "';' or '=' after variable name");
+        s.next[CC_SEMI]   = S_BLOCK;     // no init; OnLeaveState pops VarDecl
+        s.next[CC_EQUALS] = S_INIT_WAIT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_INIT_WAIT (36) — skip WS after '='; start of initializer expression
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "initializer expression");
+        s.next[CC_LETTER] = S_INIT_IDENT;
+        s.next[CC_DQUOTE] = S_INIT_STRLIT;
+        s.next[CC_DIGIT]  = S_ARG_NUMLIT;
+        s.next[CC_AMP]    = S_ARG_ADDR_WAIT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_INIT_IDENT (37) — scanning an identifier in the init-expr context
+    //
+    // Dispatch on '(' → it's a function call (init = Call node).
+    // Dispatch on ' ', ';' → bare identifier or keyword (NullLit, BoolLit, Ident).
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "identifier or '(' for function call in initializer");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_LPAREN] = SN_DISPATCH;
+        s.next[CC_SEMI]   = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_INIT_STRLIT (38) — inside a "..." string literal (init context)
+    //
+    // All chars accumulate via SN_SELF until the closing '"'.
+    // CC_NULL is an error (unterminated literal).
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "string literal content or closing '\"'");
         for (auto& n : s.next) n = SN_SELF;
-        s.next[CC_NULL] = SN_ERROR;
+        s.next[CC_DQUOTE] = S_AFTER_CALL; // closing '"'; StringLit built in OnLeaveState
+        s.next[CC_NULL]   = SN_ERROR;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_CALL_ARGS (39) — start of the next call argument (or closing ')')
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS | NS_SKIP_COMMENTS,
+                         "argument expression or ')'");
+        s.next[CC_LETTER] = S_ARG_IDENT;
+        s.next[CC_AMP]    = S_ARG_ADDR_WAIT;
+        s.next[CC_DIGIT]  = S_ARG_NUMLIT;
+        s.next[CC_RPAREN] = S_AFTER_CALL; // empty list / end; OnLeaveState pops
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_IDENT (40) — scanning an identifier in an argument context
+    //
+    // Dispatch on '.' → member access (MemberAccess node).
+    // Dispatch on ',' → arg done; next arg.
+    // Dispatch on ')' → arg done; arg list closes.
+    // Dispatch on ' ' → arg done; skip WS for ',' or ')'.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "argument identifier, '.', ',', ')', or space");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_DOT]    = SN_DISPATCH;
+        s.next[CC_COMMA]  = SN_DISPATCH;
+        s.next[CC_RPAREN] = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_AFTER_IDENT (41) — skip WS after an arg ident; ',' or ')'
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "',' or ')'");
+        s.next[CC_COMMA]  = S_CALL_ARGS;  // next arg; Ident already committed
+        s.next[CC_RPAREN] = S_AFTER_CALL; // OnLeaveState pops ArgList + Call
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_MEMBER_WAIT (42) — after '.'; skip WS before member ident
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "member name after '.'");
+        s.next[CC_LETTER] = S_ARG_MEMBER_IDENT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_MEMBER_IDENT (43) — scanning the member name
+    //
+    // Dispatch on ',' → member done; next arg.
+    // Dispatch on ')' → member done; arg list closes.
+    // Dispatch on ' ' → member done; skip WS for ',' or ')'.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "member name, ',', ')', or space");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_COMMA]  = SN_DISPATCH;
+        s.next[CC_RPAREN] = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_ADDR_WAIT (44) — after '&'; skip WS before the operand ident
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS, "identifier after '&'");
+        s.next[CC_LETTER] = S_ARG_ADDR_IDENT;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_ADDR_IDENT (45) — scanning the ident after '&'
+    //
+    // Dispatch on ',' → addr-of done; next arg.
+    // Dispatch on ')' → addr-of done; arg list closes.
+    // Dispatch on ' ', ';' → addr-of done; S_AFTER_CALL handles the rest.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "identifier, ',', ')', or ';' after '&'");
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_COMMA]  = SN_DISPATCH;
+        s.next[CC_RPAREN] = SN_DISPATCH;
+        s.next[CC_SEMI]   = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_ARG_NUMLIT (46) — scanning a numeric literal (decimal or 0x hex)
+    //
+    // CC_LETTER covers 'x' in "0x" and hex digits a–f.
+    // Dispatch on ',' → lit done; next arg.
+    // Dispatch on ')' → lit done; arg list closes.
+    // Dispatch on ';' → lit done; statement ends (init or expr-stmt context).
+    // Dispatch on ' ' → lit done; S_AFTER_CALL handles the rest.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(0, "numeric literal, ',', ')', or ';'");
+        s.next[CC_DIGIT]  = SN_SELF;
+        s.next[CC_LETTER] = SN_SELF;
+        s.next[CC_COMMA]  = SN_DISPATCH;
+        s.next[CC_RPAREN] = SN_DISPATCH;
+        s.next[CC_SEMI]   = SN_DISPATCH;
+        s.next[CC_SPACE]  = SN_DISPATCH;
+        return s;
+    }(),
+
+    // -----------------------------------------------------------------------
+    // S_AFTER_CALL (47) — after any expression end; skip WS then expect ';'
+    //
+    // ';' → OnLeaveState pops ExprStmt or VarDecl; state returns to S_BLOCK.
+    // -----------------------------------------------------------------------
+    []() constexpr {
+        auto s = MkState(NS_SKIP_WS | NS_SKIP_COMMENTS,
+                         "';' to end statement");
+        s.next[CC_SEMI] = S_BLOCK;
         return s;
     }(),
 };

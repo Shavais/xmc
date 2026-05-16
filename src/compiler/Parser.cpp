@@ -332,6 +332,49 @@ static void WriteParserLog(ParseTreeNode*      root,
 }
 
 // =============================================================================
+// Statement/expression helpers
+// =============================================================================
+
+// Parse a decimal or 0x-hex integer token text into a uint64_t.
+static uint64_t ParseIntTok(std::string_view tok)
+{
+    if (tok.size() >= 2 && tok[0] == '0' && (tok[1] == 'x' || tok[1] == 'X')) {
+        uint64_t v = 0;
+        for (char c : tok.substr(2)) {
+            v *= 16;
+            if (c >= '0' && c <= '9')      v += uint64_t(c - '0');
+            else if (c >= 'a' && c <= 'f') v += uint64_t(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') v += uint64_t(c - 'A' + 10);
+        }
+        return v;
+    }
+    uint64_t v = 0;
+    for (char c : tok) v = v * 10 + uint64_t(c - '0');
+    return v;
+}
+
+// Allocate an Ident, NullLit, or BoolLit node for `tok`.
+static ParseTreeNode* MakeIdentOrLit(ParseCtx& ctx, std::string_view tok)
+{
+    if (tok == "null") {
+        return ctx.allocNode(ParseKind::NullLit);
+    }
+    if (tok == "true") {
+        auto* n = ctx.allocNode(ParseKind::BoolLit);
+        n->intValue = 1;
+        return n;
+    }
+    if (tok == "false") {
+        auto* n = ctx.allocNode(ParseKind::BoolLit);
+        n->intValue = 0;
+        return n;
+    }
+    auto* n = ctx.allocNode(ParseKind::Ident);
+    n->name = ctx.symbols.InternString(tok);
+    return n;
+}
+
+// =============================================================================
 // DispatchIdent
 //
 // Called when an identifier token is complete (the SN_DISPATCH action fires).
@@ -596,6 +639,213 @@ static uint16_t DispatchIdent(ParseCtx& ctx)
         return S_PARAM_AFTER_NAME;
     }
 
+    // -----------------------------------------------------------------------
+    // S_STMT_IDENT — first identifier of a block statement
+    //
+    //   trigger '(' → ExprStmt / Call
+    //   trigger '[' → VarDecl with array type
+    //   trigger ' ' → save pending; S_STMT_AFTER_SPACE resolves later
+    // -----------------------------------------------------------------------
+    case S_STMT_IDENT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        if (trigger == '(') {
+            ctx.advance(); // consume '(' (Drive won't since this is dispatch)
+            auto* es = ctx.allocNode(ParseKind::ExprStmt);
+            ctx.addChild(es);
+            ctx.pushNode(es);
+            auto* call = ctx.allocNode(ParseKind::Call);
+            ctx.addChild(call);
+            ctx.pushNode(call);
+            auto* callee = ctx.allocNode(ParseKind::Ident);
+            callee->name = ctx.symbols.InternString(tok);
+            ctx.addChild(callee);
+            auto* args = ctx.allocNode(ParseKind::ArgList);
+            ctx.addChild(args);
+            ctx.pushNode(args);
+            return S_CALL_ARGS;
+        }
+        if (trigger == '[') {
+            // Array-type VarDecl: type name is tok, isArray = true.
+            // Do NOT advance; S_VARDECL_LBRACK will consume '['.
+            auto* vd = ctx.allocNode(ParseKind::VarDecl);
+            ctx.addChild(vd);
+            ctx.pushNode(vd);
+            auto* ty = ctx.allocNode(ParseKind::Type);
+            ty->name   = ctx.symbols.InternString(tok);
+            ty->isArray = true;
+            ctx.addChild(ty); // added to VarDecl's pending children
+            return S_VARDECL_LBRACK;
+        }
+        if (trigger == ' ' || trigger == '\t' || trigger == '\r' || trigger == '\n') {
+            ctx.pending = ctx.symbols.InternString(tok);
+            return S_STMT_AFTER_SPACE;
+        }
+        ctx.error("'(', '[', or space after statement identifier", trigger);
+        return S_BLOCK;
+    }
+
+    // -----------------------------------------------------------------------
+    // S_VARDECL_NAME — variable name complete
+    //
+    // The VarDecl is always already on the stack (created in OnEnterState or
+    // in DispatchIdent above). Just record the name and go to AFTER_NAME.
+    // -----------------------------------------------------------------------
+    case S_VARDECL_NAME: {
+        if (ctx.current() && ctx.current()->kind == ParseKind::VarDecl)
+            ctx.current()->name = ctx.symbols.InternString(tok);
+        return S_VARDECL_AFTER_NAME;
+    }
+
+    // -----------------------------------------------------------------------
+    // S_INIT_IDENT — identifier/keyword in the initializer expression
+    //
+    //   trigger '(' → init is a function call
+    //   trigger ' ', ';' → init is a bare identifier or keyword literal
+    // -----------------------------------------------------------------------
+    case S_INIT_IDENT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        if (trigger == '(') {
+            ctx.advance(); // consume '('
+            auto* call = ctx.allocNode(ParseKind::Call);
+            ctx.addChild(call); // adds to VarDecl's pending children
+            ctx.pushNode(call);
+            auto* callee = ctx.allocNode(ParseKind::Ident);
+            callee->name = ctx.symbols.InternString(tok);
+            ctx.addChild(callee);
+            auto* args = ctx.allocNode(ParseKind::ArgList);
+            ctx.addChild(args);
+            ctx.pushNode(args);
+            return S_CALL_ARGS;
+        }
+        // Bare ident or keyword as init value.
+        ctx.addChild(MakeIdentOrLit(ctx, tok));
+        return S_AFTER_CALL; // skip WS then ';' → pop VarDecl → S_BLOCK
+    }
+
+    // -----------------------------------------------------------------------
+    // S_ARG_IDENT — argument identifier complete
+    //
+    //   trigger '.' → member access (obj ident already scanned)
+    //   trigger ',' → arg done; more args follow
+    //   trigger ')' → arg done; arg list closes
+    //   trigger ' ' → arg done; skip WS for ',' or ')'
+    // -----------------------------------------------------------------------
+    case S_ARG_IDENT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        if (trigger == '.') {
+            // Build MemberAccess: push it, add the object Ident as its child.
+            auto* ma = ctx.allocNode(ParseKind::MemberAccess);
+            ctx.addChild(ma);  // adds to ArgList frame
+            ctx.pushNode(ma);
+            auto* obj = ctx.allocNode(ParseKind::Ident);
+            obj->name = ctx.symbols.InternString(tok);
+            ctx.addChild(obj); // adds to MemberAccess frame
+            ctx.advance();     // consume '.'
+            return S_ARG_MEMBER_WAIT;
+        }
+
+        ctx.addChild(MakeIdentOrLit(ctx, tok));
+
+        if (trigger == ',') {
+            ctx.advance(); // consume ','
+            return S_CALL_ARGS;
+        }
+        if (trigger == ')') {
+            ctx.advance(); // consume ')'
+            if (ctx.current() && ctx.current()->kind == ParseKind::ArgList)
+                ctx.popNode();
+            if (ctx.current() && ctx.current()->kind == ParseKind::Call)
+                ctx.popNode();
+            return S_AFTER_CALL;
+        }
+        // Space: arg done; skip WS then ',' or ')'.
+        return S_ARG_AFTER_IDENT;
+    }
+
+    // -----------------------------------------------------------------------
+    // S_ARG_MEMBER_IDENT — member name complete; pop MemberAccess
+    // -----------------------------------------------------------------------
+    case S_ARG_MEMBER_IDENT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        if (ctx.current() && ctx.current()->kind == ParseKind::MemberAccess) {
+            ctx.current()->name = ctx.symbols.InternString(tok);
+            ctx.popNode(); // MemberAccess → committed to ArgList
+        }
+
+        if (trigger == ',') {
+            ctx.advance();
+            return S_CALL_ARGS;
+        }
+        if (trigger == ')') {
+            ctx.advance();
+            if (ctx.current() && ctx.current()->kind == ParseKind::ArgList)
+                ctx.popNode();
+            if (ctx.current() && ctx.current()->kind == ParseKind::Call)
+                ctx.popNode();
+            return S_AFTER_CALL;
+        }
+        // Space: skip WS then ',' or ')'.
+        return S_ARG_AFTER_IDENT;
+    }
+
+    // -----------------------------------------------------------------------
+    // S_ARG_ADDR_IDENT — ident after '&'; pop AddressOf
+    // -----------------------------------------------------------------------
+    case S_ARG_ADDR_IDENT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        auto* operand = ctx.allocNode(ParseKind::Ident);
+        operand->name = ctx.symbols.InternString(tok);
+        ctx.addChild(operand);
+        if (ctx.current() && ctx.current()->kind == ParseKind::AddressOf)
+            ctx.popNode(); // AddressOf → committed to ArgList or VarDecl
+
+        if (trigger == ',') {
+            ctx.advance();
+            return S_CALL_ARGS;
+        }
+        if (trigger == ')') {
+            ctx.advance();
+            if (ctx.current() && ctx.current()->kind == ParseKind::ArgList)
+                ctx.popNode();
+            if (ctx.current() && ctx.current()->kind == ParseKind::Call)
+                ctx.popNode();
+            return S_AFTER_CALL;
+        }
+        // Space or ';': S_AFTER_CALL handles the rest.
+        return S_AFTER_CALL;
+    }
+
+    // -----------------------------------------------------------------------
+    // S_ARG_NUMLIT — numeric literal complete
+    // -----------------------------------------------------------------------
+    case S_ARG_NUMLIT: {
+        char trigger = ctx.pos < ctx.source.size() ? ctx.source[ctx.pos] : '\0';
+
+        auto* lit = ctx.allocNode(ParseKind::IntLit);
+        lit->intValue = ParseIntTok(tok);
+        ctx.addChild(lit);
+
+        if (trigger == ',') {
+            ctx.advance();
+            return S_CALL_ARGS;
+        }
+        if (trigger == ')') {
+            ctx.advance();
+            if (ctx.current() && ctx.current()->kind == ParseKind::ArgList)
+                ctx.popNode();
+            if (ctx.current() && ctx.current()->kind == ParseKind::Call)
+                ctx.popNode();
+            return S_AFTER_CALL;
+        }
+        // Space or ';': S_AFTER_CALL handles the rest.
+        return S_AFTER_CALL;
+    }
+
     default:
         break;
     }
@@ -847,6 +1097,113 @@ static void OnEnterState(uint16_t fromState, uint16_t toState,
         }
         break;
 
+    // ------------------------------------------------------------------
+    // Statement first-ident scan.
+    // ------------------------------------------------------------------
+    case S_STMT_IDENT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // Variable name scan.
+    //
+    // When entered from S_STMT_AFTER_SPACE: pending holds the type name;
+    // create VarDecl + Type and push VarDecl.
+    // When entered from S_VARDECL_NAME_WAIT: VarDecl already on stack.
+    // ------------------------------------------------------------------
+    case S_VARDECL_NAME:
+        if (fromState == S_STMT_AFTER_SPACE) {
+            auto* vd = ctx.allocNode(ParseKind::VarDecl);
+            ctx.addChild(vd);
+            ctx.pushNode(vd);
+            auto* ty = ctx.allocNode(ParseKind::Type);
+            ty->name   = ctx.pending;
+            ctx.pending = {};
+            ctx.addChild(ty); // leaf: added to VarDecl frame, not pushed
+        }
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // Call arg list.
+    //
+    // When entered via a normal transition from S_STMT_AFTER_SPACE on '(':
+    // pending holds the function name; build ExprStmt > Call > Ident + ArgList.
+    // When entered from DispatchIdent: setup was already done there.
+    // ------------------------------------------------------------------
+    case S_CALL_ARGS:
+        if (fromState == S_STMT_AFTER_SPACE) {
+            auto* es = ctx.allocNode(ParseKind::ExprStmt);
+            ctx.addChild(es);
+            ctx.pushNode(es);
+            auto* call = ctx.allocNode(ParseKind::Call);
+            ctx.addChild(call);
+            ctx.pushNode(call);
+            auto* callee = ctx.allocNode(ParseKind::Ident);
+            callee->name = ctx.pending;
+            ctx.pending  = {};
+            ctx.addChild(callee);
+            auto* args = ctx.allocNode(ParseKind::ArgList);
+            ctx.addChild(args);
+            ctx.pushNode(args);
+        }
+        break;
+
+    // ------------------------------------------------------------------
+    // Argument ident scan.
+    // ------------------------------------------------------------------
+    case S_ARG_IDENT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // Member ident scan.
+    // ------------------------------------------------------------------
+    case S_ARG_MEMBER_IDENT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // AddressOf creation.
+    //
+    // Entered from S_CALL_ARGS or S_INIT_WAIT on '&'.
+    // ctx.addChild() adds AddressOf to the current top (ArgList or VarDecl).
+    // ------------------------------------------------------------------
+    case S_ARG_ADDR_WAIT: {
+        auto* ao = ctx.allocNode(ParseKind::AddressOf);
+        ctx.addChild(ao);
+        ctx.pushNode(ao);
+        break;
+    }
+
+    // ------------------------------------------------------------------
+    // AddressOf operand ident scan.
+    // ------------------------------------------------------------------
+    case S_ARG_ADDR_IDENT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // Numeric literal scan.
+    // ------------------------------------------------------------------
+    case S_ARG_NUMLIT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // Init-expression ident scan.
+    // ------------------------------------------------------------------
+    case S_INIT_IDENT:
+        ctx.startToken();
+        break;
+
+    // ------------------------------------------------------------------
+    // String literal: record the position of the opening '"'.
+    // ------------------------------------------------------------------
+    case S_INIT_STRLIT:
+        ctx.startToken(); // tokenStart = position of opening '"'
+        break;
+
     default:
         break;
     }
@@ -882,6 +1239,54 @@ static void OnLeaveState(uint16_t fromState, uint16_t toState,
     if (cc == CC_SEMI && fromState == S_AFTER_PARAMS) {
         if (ctx.current() && ctx.current()->kind == ParseKind::ExternDecl)
             ctx.popNode();
+    }
+
+    // ------------------------------------------------------------------
+    // VarDecl completion on ';' (no initializer).
+    // ------------------------------------------------------------------
+    if (cc == CC_SEMI && fromState == S_VARDECL_AFTER_NAME) {
+        if (ctx.current() && ctx.current()->kind == ParseKind::VarDecl)
+            ctx.popNode();
+    }
+
+    // ------------------------------------------------------------------
+    // Statement completion on ';' (after expression or call).
+    // Pops ExprStmt or VarDecl (whichever is on top).
+    // ------------------------------------------------------------------
+    if (cc == CC_SEMI && fromState == S_AFTER_CALL) {
+        ParseTreeNode* top = ctx.current();
+        if (top && (top->kind == ParseKind::ExprStmt ||
+                    top->kind == ParseKind::VarDecl))
+            ctx.popNode();
+    }
+
+    // ------------------------------------------------------------------
+    // Call arg list completion on ')'.
+    //
+    // Triggered from S_CALL_ARGS (empty arg list) or S_ARG_AFTER_IDENT
+    // (last arg had trailing space).  DispatchIdent handles the non-empty
+    // no-space case by popping directly and advancing.
+    // ------------------------------------------------------------------
+    if (cc == CC_RPAREN &&
+        (fromState == S_CALL_ARGS || fromState == S_ARG_AFTER_IDENT))
+    {
+        if (ctx.current() && ctx.current()->kind == ParseKind::ArgList)
+            ctx.popNode();
+        if (ctx.current() && ctx.current()->kind == ParseKind::Call)
+            ctx.popNode();
+    }
+
+    // ------------------------------------------------------------------
+    // String literal completion on closing '"'.
+    //
+    // tokenStart was set to the opening '"' when S_INIT_STRLIT was entered.
+    // ctx.pos is AT the closing '"' (Drive hasn't advanced yet).
+    // ------------------------------------------------------------------
+    if (cc == CC_DQUOTE && fromState == S_INIT_STRLIT) {
+        auto* lit      = ctx.allocNode(ParseKind::StringLit);
+        lit->srcStart  = ctx.tokenStart + 1;                    // skip opening '"'
+        lit->srcLen    = ctx.pos - ctx.tokenStart - 1;          // content length
+        ctx.addChild(lit);
     }
 }
 
