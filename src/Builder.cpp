@@ -18,7 +18,7 @@ namespace xmc
 {
 	// -------------------------------------------------------------------------
 	// Wildcard matching (* and ? against a flat name, case-insensitive)
-	// Does not treat ':' as a separator — namespace-qualified test names are
+	// Does not treat ':' as a separator ï¿½ namespace-qualified test names are
 	// matched as a flat string.
 	// -------------------------------------------------------------------------
 	static bool WildMatch(std::string_view pattern, std::string_view text)
@@ -214,10 +214,10 @@ namespace xmc
 				continue;  // try remaining jobs, report at end
 			}
 
-			//auto linkStart = std::chrono::high_resolution_clock::now();
-			//Linker::Link(job, project);
-			//auto linkEnd = std::chrono::high_resolution_clock::now();
-			//totalLink += std::chrono::duration<double>(linkEnd - linkStart).count();
+			auto linkStart = std::chrono::high_resolution_clock::now();
+			Linker::Link(job, project);
+			auto linkEnd = std::chrono::high_resolution_clock::now();
+			totalLink += std::chrono::duration<double>(linkEnd - linkStart).count();
 		}
 
 		if (!anyError)

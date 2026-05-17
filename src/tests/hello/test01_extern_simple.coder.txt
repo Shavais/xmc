@@ -1,0 +1,5 @@
+.\test01_extern_simple.xm:3:7File
+.\test01_extern_simple.xm:3:7  ExternDecl  Foo
+.\test01_extern_simple.xm:3:11    ParamList
+.\test01_extern_simple.xm:3:8      Param  a
+.\test01_extern_simple.xm:3:8        Type  u32

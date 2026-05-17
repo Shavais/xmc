@@ -35,7 +35,8 @@ public:
 	uint32_t AddExternalSymbol(const std::string& name);
 
 	// Add data (like your "Hello" string)
-	uint32_t AddDataSymbol(const std::string& name, uint16_t sectionIdx, const std::vector<uint8_t>& data);
+	uint32_t AddDataSymbol(const std::string& name, uint16_t sectionIdx, const std::vector<uint8_t>& data,
+	                       uint8_t storageClass = IMAGE_SYM_CLASS_EXTERNAL);
 
 	// Set the name of given symbol
 	void SetSymbolName(RawSymbol& sym, const std::string& name);
@@ -56,6 +57,10 @@ public:
 	uint32_t GetSectionBufferSize(uint16_t sectionIdx);
 
 	void AppendPadding(uint16_t sectionIdx, uint32_t alignment);
+
+	// Promote an existing external (undefined) symbol to a defined symbol.
+	// Used when a forward-referenced function is later encountered as a definition.
+	void UpgradeSymbol(uint32_t symbolIdx, uint32_t value, uint16_t sectionIdx);
 
 	// Write coff file to path
 	void WriteTo(const std::string& path);

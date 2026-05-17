@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <vector>
@@ -21,8 +22,9 @@ namespace xmc
 
 	struct SymbolEntry
 	{
-		InternedString       name;
-		std::vector<Symbol*> candidates; // pointers into this shard's arena
+		InternedString                            name;
+		std::vector<Symbol*>                      candidates; // pointers into this shard's arena
+		std::vector<std::function<void(Symbol*)>> waiters;    // SubscribeOrResolve callbacks
 	};
 
 	struct SymbolShard
@@ -62,6 +64,31 @@ namespace xmc
 	SymbolTable::SymbolTable() : m_(std::make_unique<Impl>()) {}
 	SymbolTable::~SymbolTable() = default;
 
+	// Intern a string while already holding shard.mtx for writing.
+	// Creates an entry in shard.table if the name is new. Returns the
+	// stable InternedString whose str pointer lives in the shard arena.
+	static InternedString InternStringUnderLock(SymbolShard& shard,
+	                                            std::string_view text,
+	                                            uint64_t hash)
+	{
+		const uint32_t len = static_cast<uint32_t>(text.size());
+		const InternedString probe{ text.data(), len, hash };
+
+		auto it = shard.table.find(probe);
+		if (it != shard.table.end()) return it->first;
+
+		char* storage = static_cast<char*>(shard.arena.Allocate(len + 1));
+		std::memcpy(storage, text.data(), len);
+		storage[len] = '\0';
+
+		const InternedString interned{ storage, len, hash };
+		SymbolEntry entry;
+		entry.name = interned;
+		shard.table.emplace(interned, std::move(entry));
+
+		return interned;
+	}
+
 	InternedString SymbolTable::InternString(std::string_view text)
 	{
 		const uint32_t len = static_cast<uint32_t>(text.size());
@@ -77,25 +104,13 @@ namespace xmc
 			if (it != shard.table.end()) return it->first;
 		}
 
-		// Slow path: copy bytes into the shard's arena under the write lock.
+		// Slow path: write lock, delegate to the shared helper.
 		std::unique_lock wl(shard.mtx);
-
-		auto it = shard.table.find(probe);
-		if (it != shard.table.end()) return it->first;  // lost the race
-
-		char* storage = static_cast<char*>(shard.arena.Allocate(len + 1));
-		std::memcpy(storage, text.data(), len);
-		storage[len] = '\0';
-
-		const InternedString interned{ storage, len, hash };
-		SymbolEntry entry;
-		entry.name = interned;
-		shard.table.emplace(interned, std::move(entry));
-
-		return interned;
+		return InternStringUnderLock(shard, text, hash);
 	}
 
-	Symbol* SymbolTable::InternSymbol(std::string_view name, const uint32_t* namespacePath, uint32_t pathLen)
+	Symbol* SymbolTable::InternSymbol(std::string_view name, const uint32_t* namespacePath, uint32_t pathLen,
+	                                  std::vector<std::function<void(Symbol*)>>* outWaiters)
 	{
 		if (pathLen > m_->maxDepth) return nullptr;
 
@@ -113,8 +128,6 @@ namespace xmc
 			for (uint32_t i = 0; i < pathLen; ++i) sym->inline_path[i] = namespacePath[i];
 		}
 		else {
-			// Overflow path lives beside the Symbol in the same shard arena.
-			// Trivially destructible; dies when the SymbolTable dies.
 			uint32_t* overflow = static_cast<uint32_t*>(
 				shard.arena.Allocate(pathLen * sizeof(uint32_t)));
 			for (uint32_t i = 0; i < pathLen; ++i) overflow[i] = namespacePath[i];
@@ -125,7 +138,60 @@ namespace xmc
 		if (entry.name.str == nullptr) entry.name = iname;
 		entry.candidates.push_back(sym);
 
+		// Drain waiters registered by SubscribeOrResolve before releasing the lock.
+		// Caller submits them as pool tasks after InternSymbol returns.
+		if (outWaiters && !entry.waiters.empty()) {
+			*outWaiters = std::move(entry.waiters);
+		}
+
 		return sym;
+	}
+
+	Symbol* SymbolTable::SubscribeOrResolve(std::string_view name,
+	                                        const uint32_t* callerPath,
+	                                        uint32_t callerPathLen,
+	                                        std::function<void(Symbol*)> onResolved)
+	{
+		const uint32_t len = static_cast<uint32_t>(name.size());
+		const uint64_t hash = HashBytes(name.data(), len);
+
+		SymbolShard& shard = m_->shards[hash & 0xFFu];
+		const InternedString probe{ name.data(), len, hash };
+
+		std::unique_lock wl(shard.mtx);
+
+		auto it = shard.table.find(probe);
+		if (it != shard.table.end()) {
+			// Entry exists — try to resolve using the same prefix-match logic as
+			// ResolveSymbol.
+			const SymbolEntry& entry = it->second;
+			Symbol* best = nullptr;
+			uint32_t bestDepth = 0;
+			bool ambiguous = false;
+
+			for (Symbol* s : entry.candidates) {
+				if (s->pathLen > callerPathLen) continue;
+				const uint32_t* p = s->Path();
+				bool isPrefix = true;
+				for (uint32_t i = 0; i < s->pathLen; ++i) {
+					if (p[i] != callerPath[i]) { isPrefix = false; break; }
+				}
+				if (!isPrefix) continue;
+				const uint32_t depth = s->pathLen;
+				if (depth > bestDepth) { best = s; bestDepth = depth; ambiguous = false; }
+				else if (depth == bestDepth && s != best) { ambiguous = true; }
+			}
+
+			if (!ambiguous && best) {
+				return best; // resolved immediately; caller handles the symbol
+			}
+		}
+
+		// Symbol not yet visible: intern the name (creates the entry if new)
+		// and register the continuation to fire when it is declared.
+		InternedString iname = InternStringUnderLock(shard, name, hash);
+		shard.table[iname].waiters.push_back(std::move(onResolved));
+		return nullptr;
 	}
 
 	Symbol* SymbolTable::ResolveSymbol(std::string_view name, const uint32_t* callerPath, uint32_t callerPathLen)

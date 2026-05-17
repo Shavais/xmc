@@ -1,0 +1,23 @@
+.\main.xm:1:7           File
+.\main.xm:1:7             ExternDecl  ExitProcess
+.\main.xm:1:28              ParamList
+.\main.xm:1:17                Param  exitCode
+.\main.xm:1:17                  Type  u32
+.\main.xm:3:1             FuncDecl  main  →  [0(prologue), 4(xor_eax_eax), 1(epilogue)]
+.\main.xm:3:1               ReturnSpec
+.\main.xm:3:1                 Type  i32
+.\main.xm:3:9               ParamList
+.\main.xm:3:12              Block
+.\main.xm:4:5                 ExprStmt
+.\main.xm:4:5                   Call  →  [3(call_rel32)]
+.\main.xm:4:5                     Ident  greet
+.\main.xm:4:5                     ArgList
+.\main.xm:5:5                 ExprStmt
+.\main.xm:5:5                   Call  →  [3(call_rel32)]
+.\main.xm:5:5                     Ident  farewell
+.\main.xm:5:5                     ArgList
+.\main.xm:6:5                 ExprStmt
+.\main.xm:6:5                   Call  →  [3(call_rel32)]
+.\main.xm:6:5                     Ident  ExitProcess
+.\main.xm:6:5                     ArgList
+.\main.xm:6:17                      IntLit  →  [5(mov_ecx_imm32)]  slot=1

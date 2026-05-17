@@ -1,0 +1,9 @@
+FuncDecl main (line 20)
+  totalStackSize = 56
+  funcFlags      = 0
+  locals:
+    h: rsp+40
+    written: rsp+48
+  calls:
+    GetStdHandle (line 21): arg[0]=slot1
+    WriteFile (line 26): arg[0]=slot1 arg[1]=slot2 arg[2]=slot3 arg[3]=slot4 arg[4]=slot5

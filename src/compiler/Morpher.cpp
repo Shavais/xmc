@@ -1,31 +1,36 @@
 // compiler/Morpher.cpp
 //
-// Per-file Morpher: work-queue + upward-propagation model.
+// Per-file Morpher: concurrent bottom-up type inference.
 //
-// Design (Under The Hood §1c):
-//   The Parser submits one pool task per completed leaf node. Each task calls
-//   MorphNoun, which applies the leaf's typing rule then walks up via parent
-//   pointers. At each ancestor, pendingChildren is atomically decremented; the
-//   task that brings it to zero wins the right to apply that ancestor's rule
-//   and continue upward. All other tasks that race on the same ancestor return
-//   immediately after the fetch_sub, leaving the winner to proceed.
+// Design:
+//   The Parser submits one pool task per completed leaf node during Drive().
+//   Each task calls MorphNoun, which applies the leaf's typing rule then walks
+//   up via parent pointers (PropagateUp). At each ancestor the thread:
+//     1. Atomically increments morphed_children (seq_cst).
+//     2. Checks parser_complete (seq_cst) — if false, returns; the parser
+//        thread will check when it closes the node.
+//     3. Checks morphed_children == childCount — if false, returns; another
+//        sibling's task will eventually win.
+//     4. Test-and-sets morphed — if already set, returns; another thread won.
+//     5. Calls ApplyRule inline and continues to the parent.
+//
+//   The seq_cst ordering on steps 1 and 2 prevents the lost-wakeup race:
+//   if the parser stores parser_complete concurrently with the last child's
+//   fetch_add, one of the two sides sees the other's write in the total
+//   seq_cst order and handles the node.
 //
 //   Scope-opening nodes (File, ExternDecl, FuncDecl, Block) have their scope
 //   IDs pre-allocated by the Parser and stored on the node, so the Morpher
-//   never maintains its own scope stack — it reconstructs scope paths on demand
-//   by walking parent pointers.
+//   never maintains its own scope stack.
 //
-//   Symbol::declNode carries the declaring ParseTreeNode* directly, so Call and
-//   Ident nodes can read the callee's return type without a per-run map.
+//   Symbol::declNode carries the declaring ParseTreeNode* directly, so Call
+//   and Ident nodes can read the callee's return type without a per-run map.
 //
-//   MorphTree calls pool.wait() to drain all MorphNoun tasks, then writes the
-//   morpher log if requested by the project file.
-//
-// What this does NOT yet implement (deferred until tests require it):
+// What this does NOT yet implement:
 //   - Re-propagation after late symbol resolution (subscriber index).
 //   - rmask narrowing beyond defaults.
-//   - Conversion-node insertion (Reviewer's job, §6.1).
-//   - Cross-file subscriber bookkeeping (single-file hello.xm doesn't need it).
+//   - Conversion-node insertion (Reviewer's job).
+//   - Cross-file subscriber bookkeeping.
 //
 #include "pch/pch.h"
 #include "Morpher.h"
@@ -35,8 +40,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
+
+#include "../tool/BS_thread_pool.hpp"
 
 #include "tool/Logger.h"
 #include "Types.h"
@@ -139,7 +147,7 @@ namespace xmc
 			NodeRule::FileNode,      // File
 			NodeRule::ExternDeclNode,// ExternDecl
 			NodeRule::FuncDeclNode,  // FuncDecl
-			NodeRule::None,          // ParamList — no action; just drains pendingChildren
+			NodeRule::None,          // ParamList — no action; structural pass-through
 			NodeRule::ParamNode,     // Param
 			NodeRule::ReturnSpecNode,// ReturnSpec
 			NodeRule::TypeNode,      // Type
@@ -174,14 +182,20 @@ namespace xmc
 		// =============================================================
 		// Forward declarations of free functions
 		// =============================================================
-		static void ApplyRule(ParseTreeNode* n,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
-		static void ApplyExprRule(ParseTreeNode* n, ExprRule rule,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
-		static void ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+		// ApplyRule/ApplyExprRule return true if PropagateUp should be called,
+		// false if propagation is deferred (e.g. subscribed to a late symbol).
+		static bool ApplyRule(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool);
+		static bool ApplyExprRule(ParseTreeNode* n, ExprRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool);
+		static bool ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool);
 		static void PropagateUp(ParseTreeNode* n,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job);
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool);
 
 		// =============================================================
 		// Scope helpers
@@ -243,15 +257,18 @@ namespace xmc
 			ParseTreeNode* declNode,
 			Xmo& xmo,
 			SymbolTable& symbols,
-			const CompileJob& job)
+			const CompileJob& job,
+			BS::thread_pool<>& pool)
 		{
 			std::vector<uint32_t> path;
 			CollectScopePath(declNode->parent, path);
 
+			std::vector<std::function<void(Symbol*)>> waiters;
 			Symbol* sym = symbols.InternSymbol(
 				std::string_view(name.str, name.len),
 				path.data(),
-				static_cast<uint32_t>(path.size()));
+				static_cast<uint32_t>(path.size()),
+				&waiters);
 			if (!sym) {
 				Report(declNode,
 					"failed to intern symbol '" +
@@ -265,6 +282,15 @@ namespace xmc
 			sym->xmoIdx    = xmo.index;
 			sym->declNode  = declNode;
 			xmo.PushOwnedSymbol(sym);  // thread-safe append
+
+			// Submit subscriber callbacks as pool tasks. Each callback was
+			// registered by SubscribeOrResolve on a morpher task that couldn't
+			// yet resolve this symbol.
+			for (auto& w : waiters) {
+				pool.detach_task([sym, waiter = std::move(w)]() {
+					waiter(sym);
+				});
+			}
 			return sym;
 		}
 
@@ -282,9 +308,14 @@ namespace xmc
 
 		// =============================================================
 		// ApplyExprRule — expression-node typing
+		// Returns false only for the Ident case when the symbol is not yet
+		// declared and a subscriber callback was registered. The caller
+		// (MorphNoun) skips PropagateUp in that case; the callback will
+		// resume propagation later when the declaration fires.
 		// =============================================================
-		static void ApplyExprRule(ParseTreeNode* n, ExprRule rule,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		static bool ApplyExprRule(ParseTreeNode* n, ExprRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool)
 		{
 			switch (rule) {
 
@@ -319,22 +350,26 @@ namespace xmc
 				break;
 
 			case ExprRule::Ident: {
-				Symbol* sym = ResolveSymbol(n->name, n, symbols);
+				std::vector<uint32_t> path;
+				CollectScopePath(n->parent, path);
+
+				Symbol* sym = symbols.SubscribeOrResolve(
+					std::string_view(n->name.str, n->name.len),
+					path.data(), static_cast<uint32_t>(path.size()),
+					[n, &xmo, &symbols, &job, &pool](Symbol* s) {
+						n->declaredSymbol = s;
+						if (s->declNode) CopyTypeShape(n, s->declNode);
+						else n->baseType = s->baseType.load(std::memory_order_relaxed);
+						PropagateUp(n, xmo, symbols, job, pool);
+					});
+
 				if (!sym) {
-					Report(n, "undeclared identifier: " +
-						std::string(n->name.str, n->name.len), xmo, job);
-					n->baseType = U(BaseTypeIds::Error);
-					break;
+					// Subscribed: the callback will set the type and propagate.
+					return false;
 				}
 				n->declaredSymbol = sym;
-				// Use sym->declNode to read the declaring node's type shape.
-				ParseTreeNode* dn = sym->declNode;
-				if (dn) {
-					CopyTypeShape(n, dn);
-				}
-				else {
-					n->baseType = sym->baseType.load(std::memory_order_relaxed);
-				}
+				if (sym->declNode) CopyTypeShape(n, sym->declNode);
+				else n->baseType = sym->baseType.load(std::memory_order_relaxed);
 				break;
 			}
 
@@ -403,14 +438,16 @@ namespace xmc
 				break;
 			}
 
-			(void)xmo; (void)job; // may not be used in all branches
+			(void)xmo; (void)job; (void)pool; // may not be used in all branches
+			return true;
 		}
 
 		// =============================================================
 		// ApplyNodeRule — declaration and structural nodes
 		// =============================================================
-		static void ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		static bool ApplyNodeRule(ParseTreeNode* n, NodeRule rule,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool)
 		{
 			switch (rule) {
 
@@ -438,7 +475,7 @@ namespace xmc
 			case NodeRule::ParamNode: {
 				ParseTreeNode* type = FirstChildOfKind(n, ParseKind::Type);
 				if (type) CopyTypeShape(n, type);
-				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job, pool);
 				n->declaredSymbol = sym;
 				if (sym) {
 					sym->pointerDepth = n->pointerDepth;
@@ -456,7 +493,7 @@ namespace xmc
 				rec.blockType     = static_cast<uint8_t>(ScopeTypes::Function);
 				xmo.PushScopeRecord(rec);
 				// Declare the function symbol in the parent (file) scope.
-				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job, pool);
 				n->declaredSymbol = sym;
 				n->baseType       = U(BaseTypeIds::function);
 				if (sym) {
@@ -474,7 +511,7 @@ namespace xmc
 				rec.blockType     = static_cast<uint8_t>(ScopeTypes::Function);
 				xmo.PushScopeRecord(rec);
 				// Declare the function symbol in the parent (file) scope.
-				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job, pool);
 				n->declaredSymbol = sym;
 				n->baseType       = U(BaseTypeIds::function);
 				if (sym) {
@@ -487,7 +524,7 @@ namespace xmc
 			case NodeRule::VarDeclNode: {
 				ParseTreeNode* type = FirstChildOfKind(n, ParseKind::Type);
 				if (type) CopyTypeShape(n, type);
-				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job);
+				Symbol* sym = DeclareSymbol(n->name, AllocationType::Stack, n, xmo, symbols, job, pool);
 				n->declaredSymbol = sym;
 				if (sym) {
 					sym->pointerDepth = n->pointerDepth;
@@ -511,46 +548,60 @@ namespace xmc
 				break;
 			}
 
-			(void)symbols; // may not be used in all branches
+			(void)symbols; (void)pool; // may not be used in all branches
+			return true;
 		}
 
 		// =============================================================
 		// ApplyRule — dispatch to expr or node rule
 		// =============================================================
-		static void ApplyRule(ParseTreeNode* n,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+		static bool ApplyRule(ParseTreeNode* n,
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool)
 		{
 			auto k = static_cast<size_t>(n->kind);
 			ExprRule er = (k < std::size(kExprDesc)) ? kExprDesc[k] : ExprRule::None;
 			if (er != ExprRule::None) {
-				ApplyExprRule(n, er, xmo, symbols, job);
+				return ApplyExprRule(n, er, xmo, symbols, job, pool);
 			}
 			else {
 				NodeRule nr = (k < std::size(kNodeDesc)) ? kNodeDesc[k] : NodeRule::None;
-				ApplyNodeRule(n, nr, xmo, symbols, job);
+				return ApplyNodeRule(n, nr, xmo, symbols, job, pool);
 			}
 		}
 
 		// =============================================================
-		// PropagateUp — walk parent pointers, decrementing pendingChildren.
+		// PropagateUp — walk parent pointers after a node has been morphed.
 		//
-		// For each ancestor: atomically decrement. If this task is NOT the
-		// one that brought the count to zero, stop (another task wins).
-		// If this task IS the winner (fetch_sub returned 1), apply the
-		// ancestor's rule and continue upward.
+		// For each ancestor:
+		//   1. Increment morphed_children (seq_cst) — signals one more child done.
+		//   2. Load parser_complete (seq_cst) — if false, the parser thread has
+		//      not closed this ancestor yet; it will check when it does.
+		//   3. Check morphed_children == childCount — if false, a sibling is
+		//      still pending; that sibling's task will eventually win.
+		//   4. Test-and-set morphed — if already true, another thread won.
+		//   5. Apply the ancestor's rule inline and continue upward.
+		//
+		// The seq_cst pair on steps 1–2 eliminates the lost-wakeup race with
+		// the parser thread: both sides observe each other's write in the
+		// single total seq_cst order, so exactly one of them handles the node.
 		// =============================================================
 		static void PropagateUp(ParseTreeNode* n,
-			Xmo& xmo, SymbolTable& symbols, const CompileJob& job)
+			Xmo& xmo, SymbolTable& symbols, const CompileJob& job,
+			BS::thread_pool<>& pool)
 		{
 			ParseTreeNode* cur = n->parent;
 			while (cur) {
-				// Acquire: see writes from all tasks that resolved siblings.
-				// Release: publish our child's resolved type to the parent rule.
-				uint16_t prev = cur->pendingChildren.fetch_sub(
-					1, std::memory_order_acq_rel);
-				if (prev != 1) return; // not the last child; another task will win
-				// We are the last child — apply this node's rule.
-				ApplyRule(cur, xmo, symbols, job);
+				uint32_t mc = cur->morphed_children.fetch_add(
+					1, std::memory_order_seq_cst) + 1;
+				if (!cur->parser_complete.load(std::memory_order_seq_cst))
+					return; // parser hasn't closed this node yet
+				if (mc != cur->childCount)
+					return; // siblings still pending
+				if (cur->morphed.exchange(true, std::memory_order_acq_rel))
+					return; // another thread already claimed this node
+				if (!ApplyRule(cur, xmo, symbols, job, pool))
+					return; // propagation deferred (subscribed callback will resume)
 				cur = cur->parent;
 			}
 		}
@@ -661,28 +712,26 @@ namespace xmc
 	// =================================================================
 
 	void Morpher::MorphNoun(
-		ParseTreeNode*    node,
+		ParseTreeNode*     node,
+		Xmo&               xmo,
+		SymbolTable&       symbols,
+		const CompileJob&  job,
+		BS::thread_pool<>& pool)
+	{
+		if (ApplyRule(node, xmo, symbols, job, pool)) {
+			PropagateUp(node, xmo, symbols, job, pool);
+		}
+		// If ApplyRule returned false the node subscribed to a late symbol;
+		// the callback will call PropagateUp once the declaration fires.
+	}
+
+	void Morpher::MorphTree(
 		Xmo&              xmo,
 		SymbolTable&      symbols,
 		const CompileJob& job)
 	{
-		ApplyRule(node, xmo, symbols, job);
-		PropagateUp(node, xmo, symbols, job);
-	}
-
-	void Morpher::MorphTree(
-		Xmo&                               xmo,
-		SymbolTable&                       symbols,
-		const CompileJob&                  job,
-		const std::vector<ParseTreeNode*>& leaves)
-	{
-		// Process leaves in the order the Parser collected them. All
-		// pendingChildren are correctly initialised at this point because
-		// Drive() has returned and all popNode() calls have completed.
-		for (ParseTreeNode* n : leaves) {
-			MorphNoun(n, xmo, symbols, job);
-		}
-
+		// All MorphNoun tasks completed before this is called (pool drained by
+		// Compiler). Nothing to process here — just write the morpher log.
 		if (job.MorpherLog) {
 			WriteMorpherLog(xmo);
 		}

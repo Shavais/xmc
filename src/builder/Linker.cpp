@@ -140,19 +140,30 @@ namespace xmc
 
 		std::string args = " /NOLOGO";
 
-		// Subsystem and entry point
+		// Subsystem
 		args += " /SUBSYSTEM:" + project.GetString("subsystem", "CONSOLE");
-		args += " /ENTRY:mainCRTStartup";
 
-		// CRT selection
+		// CRT selection and entry point
 		std::string crt = Lowercase(project.GetString("crt", "static"));
-		if (crt == "static" || crt == "static-debug")
+		if (crt == "none")
 		{
+			// No CRT: entry point is the named function directly.
+			std::string entry = project.GetString("entryfunc", "main");
+			args += " /ENTRY:" + entry;
+			args += " /NODEFAULTLIB";
+		}
+		else if (crt == "static" || crt == "static-debug")
+		{
+			args += " /ENTRY:mainCRTStartup";
 			args += " libcmtd.lib libcpmtd.lib libvcruntimed.lib libucrtd.lib";
 			args += " /NODEFAULTLIB:ucrtd.lib"
 				" /NODEFAULTLIB:vcruntimed.lib"
 				" /NODEFAULTLIB:msvcrtd.lib"
 				" /NODEFAULTLIB:msvcprtd.lib";
+		}
+		else
+		{
+			args += " /ENTRY:mainCRTStartup";
 		}
 
 		// Library paths and libs from project file

@@ -2,37 +2,31 @@
 //
 // Per-file Morpher: pure semantic analysis.
 //
-// The Morpher is invoked by the Parser. Two call sites:
+// MorphNoun(node, xmo, symbols, job)
+//   Applies one node's typing rule, then propagates upward through parent
+//   pointers. At each ancestor, morphed_children is atomically incremented;
+//   if the ancestor is also parser_complete and this thread wins the morphed
+//   test-and-set, it applies that ancestor's rule inline and continues up.
+//   Called as a pool task for every leaf node, submitted by the Parser during
+//   Drive(). Interior nodes are processed inline by whoever wins their claim —
+//   either the last leaf's morpher task or the parser thread itself.
 //
-//   MorphNoun(node, xmo, symbols, job)
-//       Applies the node's typing rule, then propagates upward through
-//       parent pointers, applying each ancestor's rule once all of its
-//       children have resolved (atomic pendingChildren decrement).
-//       Called sequentially by MorphTree for each leaf in the leaves
-//       vector collected during Drive().
-//
-//   MorphTree(xmo, symbols, job, leaves)
-//       Called by the Parser after Drive() completes and all pendingChildren
-//       have been initialised by popNode(). Processes each leaf in order —
-//       safe because all parent pendingChildren are now correctly set.
-//       Writes the MorpherLog if requested by the project file.
+// MorphTree(xmo, symbols, job)
+//   Called by the Compiler after all file parser tasks and leaf morpher tasks
+//   have completed (pool drained). Writes the MorpherLog if requested by the
+//   project file. Does not process any nodes — morphing is done by MorphNoun.
 //
 // Threading contract:
-//   The Parser sets the structural fields (kind, parent, children, srcStart,
-//   srcLen, line, col, name, qualifier, regHint, intValue, floatValue,
-//   pointerDepth, isArray, scopeId, pendingChildren) before calling MorphTree.
-//   Those fields are read-only from the Morpher's perspective. The Morpher
-//   writes only baseType, minrmask, maxrmask, and declaredSymbol.
-//
-//   pendingChildren is std::atomic<uint16_t>; the machinery is in place for
-//   a future concurrent variant. In the current sequential implementation only
-//   one thread touches it at a time, so the atomicity is unused overhead (but
-//   the cost is negligible and the code is already correct for the concurrent
-//   variant when the subscriber mechanism described in §2c is implemented).
+//   The Parser sets structural fields (kind, parent, children, childCount,
+//   srcStart, srcLen, line, col, name, qualifier, regHint, intValue,
+//   floatValue, pointerDepth, isArray, scopeId) before the node's
+//   parser_complete flag is stored true. The Morpher observes parser_complete
+//   with seq_cst before reading childCount or children, so those writes are
+//   guaranteed visible. The Morpher writes baseType, minrmask, maxrmask,
+//   declaredSymbol, morphed_children, morphed, and parser_complete is
+//   written only by the Parser.
 //
 #pragma once
-
-#include <vector>
 
 #include "SymbolTable.h"
 #include "Xmo.h"
@@ -45,18 +39,22 @@ namespace xmc
     {
     public:
         // Apply one leaf node's typing rule and propagate upward.
+        // pool is needed to submit subscriber callbacks as tasks when a
+        // symbol declaration drains its waiters list.
         static void MorphNoun(
-            ParseTreeNode*    node,
+            ParseTreeNode*     node,
+            Xmo&               xmo,
+            SymbolTable&       symbols,
+            const CompileJob&  job,
+            BS::thread_pool<>& pool);
+
+        // Write the morpher log for xmo (if job.MorpherLog is set).
+        // Call only after the pool has been fully drained so all MorphNoun
+        // tasks have completed and node types are final.
+        static void MorphTree(
             Xmo&              xmo,
             SymbolTable&      symbols,
             const CompileJob& job);
-
-        // Process all leaves collected by the Parser, then write the morpher log.
-        static void MorphTree(
-            Xmo&                                xmo,
-            SymbolTable&                        symbols,
-            const CompileJob&                   job,
-            const std::vector<ParseTreeNode*>&  leaves);
     };
 
 } // namespace xmc

@@ -1,0 +1,38 @@
+# multifile.xmc — multi-file integration test for the xmc compiler.
+#
+# Three source files:
+#   greet.xm    — defines greet()   which prints "Greetings from xmc!\n"
+#   farewell.xm — defines farewell() which prints "Farewell from xmc!\n"
+#   main.xm     — calls greet(), farewell(), then ExitProcess(0)
+#
+# Cross-file calls (greet, farewell) require the subscriber index to resolve
+# correctly when all three files are parsed and morphed concurrently.
+# Expected output when the exe runs:
+#   Greetings from xmc!
+#   Farewell from xmc!
+#
+
+[base]
+Arch = x64
+Type = exe
+EntryFunc = main
+Subsystem = console
+CRT = none
+LibPaths = [
+    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
+]
+DynamicLibs = [kernel32.lib]
+Sources = [*.xm]
+
+[debug:default]
+IntPath = .
+OutPath = .
+ParserLog = 1
+MorpherLog = 1
+ReviewerLog = 1
+CoderLog = 1
+EmitterLog = 1
+
+[release]
+IntPath = .
+OutPath = .

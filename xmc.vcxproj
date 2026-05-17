@@ -145,6 +145,8 @@
     <ClCompile Include="src\Builder.cpp" />
     <ClCompile Include="src\builder\Linker.cpp" />
     <ClCompile Include="src\Compiler.cpp" />
+    <ClCompile Include="src\compiler\Coder.cpp" />
+    <ClCompile Include="src\compiler\Emitter.cpp" />
     <ClCompile Include="src\compiler\Morpher.cpp" />
     <ClCompile Include="src\compiler\Parser.cpp" />
     <ClCompile Include="src\compiler\Reviewer.cpp" />
@@ -221,6 +223,10 @@
     <None Include="src\old\tests\xm\1_Declarations\03_multi_qualifiers.xm" />
     <None Include="src\tests\hello\hello.xm" />
     <None Include="src\tests\hello\hello.xmc" />
+    <None Include="src\tests\multifile\farewell.xm" />
+    <None Include="src\tests\multifile\greet.xm" />
+    <None Include="src\tests\multifile\main.xm" />
+    <None Include="src\tests\multifile\multifile.xmc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

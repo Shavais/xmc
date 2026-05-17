@@ -21,24 +21,16 @@ uint32_t Coff::AddExternalSymbol(const std::string& name) {
 	return static_cast<uint32_t>(symbols_.size() - 1);
 }
 
-uint32_t Coff::AddDataSymbol(const std::string& name, uint16_t sectionIdx, const std::vector<uint8_t>& data) {
-	// 1. Get the current offset
+uint32_t Coff::AddDataSymbol(const std::string& name, uint16_t sectionIdx, const std::vector<uint8_t>& data,
+                             uint8_t storageClass) {
 	uint32_t offset = static_cast<uint32_t>(sectionBuffers_[sectionIdx - 1].size());
-
-	// 2. Append the raw data
 	sectionBuffers_[sectionIdx - 1].insert(sectionBuffers_[sectionIdx - 1].end(), data.begin(), data.end());
 
-	// 3. Create and Name the symbol
 	RawSymbol sym = { 0 };
-
-	// Call the helper to handle the 8-char vs String Table logic
 	SetSymbolName(sym, name);
-
 	sym.Value = offset;
 	sym.SectionNumber = sectionIdx;
-
-	// Use EXTERNAL if you want this data to be visible to the linker/other files
-	sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
+	sym.StorageClass = storageClass;
 
 	symbols_.push_back(sym);
 	return static_cast<uint32_t>(symbols_.size() - 1);
@@ -143,6 +135,13 @@ void Coff::AddRelocation(uint16_t sectionIdx, uint32_t offset, uint32_t symbolId
 
 	// Update the section header's count
 	sections_[sectionIdx - 1].NumberOfRelocations++;
+}
+
+void Coff::UpgradeSymbol(uint32_t symbolIdx, uint32_t value, uint16_t sectionIdx) {
+	if (symbolIdx < (uint32_t)symbols_.size()) {
+		symbols_[symbolIdx].Value = value;
+		symbols_[symbolIdx].SectionNumber = (int16_t)sectionIdx;
+	}
 }
 
 void Coff::AppendPadding(uint16_t sectionIdx, uint32_t alignment) {

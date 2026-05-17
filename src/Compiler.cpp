@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "compiler/Coder.h"
 #include "compiler/Emitter.h"
 #include "compiler/Morpher.h"
 #include "compiler/Parser.h"
@@ -163,6 +164,9 @@ namespace xmc
         // RunModifiedPipeline
         //
         // Submits one pool task per Modified xmo and waits for all of them.
+        // Parser tasks submit leaf Morpher tasks during Drive(), so after the
+        // file futures resolve there may still be Morpher tasks in flight.
+        // pool.wait_for_tasks() drains those before the morpher log is written.
         // -----------------------------------------------------------------
         void RunModifiedPipeline(CompilerState& s, BS::thread_pool<>& pool)
         {
@@ -181,6 +185,19 @@ namespace xmc
             }
 
             fileFutures.wait();
+
+            // Drain any Morpher leaf tasks that are still running or queued.
+            // Safe to call from the main thread (not a pool worker).
+            pool.wait();
+
+            // Write per-file morpher logs now that all morphing is complete.
+            if (s.job.MorpherLog) {
+                for (auto& xmo : s.xmos) {
+                    if (xmo->state.load(std::memory_order_relaxed) != XmoState::Modified)
+                        continue;
+                    Morpher::MorphTree(*xmo, s.symbols, s.job);
+                }
+            }
         }
 
         // -----------------------------------------------------------------
@@ -213,10 +230,9 @@ namespace xmc
                 }
                 for (auto& xmo : s.xmos) {
                     if (xmo->state.load(std::memory_order_relaxed) == XmoState::Full) {
-                        // Collect leaves by walking the loaded parse tree.
-                        std::vector<ParseTreeNode*> leaves;
-                        // TODO: implement tree walk to collect leaves here
-                        Morpher::MorphTree(*xmo, s.symbols, s.job, leaves);
+                        // TODO: submit leaf Morpher tasks for the loaded parse tree,
+                        // then call pool.wait_for_tasks() before MorphTree.
+                        Morpher::MorphTree(*xmo, s.symbols, s.job);
                     }
                 }
             }
@@ -225,20 +241,34 @@ namespace xmc
         // -----------------------------------------------------------------
         // Per-xmo passes after the pipeline has converged.
         // -----------------------------------------------------------------
-        void RunReviewer(CompilerState& s)
+        void RunReviewer(CompilerState& s, BS::thread_pool<>& pool)
         {
+            BS::multi_future<void> futures;
             for (auto& xmo : s.xmos) {
-                if (s.job.ErrorOccurred.load(std::memory_order_relaxed)) break;
-                Reviewer::Review(*xmo, s.symbols, s.job);
+                if (xmo->state.load(std::memory_order_relaxed) != XmoState::Modified)
+                    continue;
+                Xmo* x = xmo.get();
+                futures.push_back(pool.submit_task([&s, x] {
+                    if (!s.job.ErrorOccurred.load(std::memory_order_relaxed))
+                        Reviewer::Review(*x, s.symbols, s.job);
+                }));
             }
+            futures.wait();
         }
 
-        void RunCoder(CompilerState& s)
+        void RunCoder(CompilerState& s, BS::thread_pool<>& pool)
         {
+            BS::multi_future<void> futures;
             for (auto& xmo : s.xmos) {
-                if (s.job.ErrorOccurred.load(std::memory_order_relaxed)) break;
-                // Coder::Code(*xmo, s.job);
+                if (xmo->state.load(std::memory_order_relaxed) != XmoState::Modified)
+                    continue;
+                Xmo* x = xmo.get();
+                futures.push_back(pool.submit_task([&s, x] {
+                    if (!s.job.ErrorOccurred.load(std::memory_order_relaxed))
+                        Coder::Code(*x, s.job);
+                }));
             }
+            futures.wait();
         }
 
         void RunEmitterPhase1(CompilerState& s)
@@ -272,10 +302,10 @@ namespace xmc
         HandleBreakOuts(s, pool);
         if (job.ErrorOccurred.load(std::memory_order_relaxed)) return;
 
-        RunReviewer(s);
+        RunReviewer(s, pool);
         if (job.ErrorOccurred.load(std::memory_order_relaxed)) return;
 
-        RunCoder(s);
+        RunCoder(s, pool);
         if (job.ErrorOccurred.load(std::memory_order_relaxed)) return;
 
         RunEmitterPhase1(s);

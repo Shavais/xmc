@@ -1,0 +1,28 @@
+.\main.xm:1:7           File
+.\main.xm:1:7             ExternDecl  kernel32:ExitProcess  ::  function
+.\main.xm:1:28              ParamList
+.\main.xm:1:17                Param  exitCode : rcx  ::  u32
+.\main.xm:1:17                  Type  ::  u32
+.\main.xm:3:1             FuncDecl  main  ::  function
+.\main.xm:3:1               ReturnSpec  ::  i32
+.\main.xm:3:1                 Type  ::  i32
+.\main.xm:3:9               ParamList
+.\main.xm:3:12              Block
+.\main.xm:4:5                 ExprStmt
+.\main.xm:4:5                   Call  ::  i32
+.\main.xm:4:5                     Ident  greet
+.\main.xm:4:5                     ArgList
+.\main.xm:5:5                 ExprStmt
+.\main.xm:5:5                   Call  ::  i32
+.\main.xm:5:5                     Ident  farewell  ::  function
+.\main.xm:5:5                     ArgList
+.\main.xm:6:5                 ExprStmt
+.\main.xm:6:5                   Call
+.\main.xm:6:5                     Ident  ExitProcess  ::  function
+.\main.xm:6:5                     ArgList
+.\main.xm:6:17                      IntLit  ::  u8
+
+Symbols:
+  exitCode  ::  u32  [stack]  scope=5.6
+  ExitProcess  ::  function  [stack]  scope=5
+  main  ::  function  [stack]  scope=5

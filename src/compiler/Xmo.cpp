@@ -154,8 +154,6 @@ namespace xmc
 		// re-parse will re-discover them via SymbolTable::InternSymbol
 		// (which must be idempotent for the regeneration path).
 		parseTree = nullptr;
-		tempGlobalOffset = 0;
-
 		codeBuffer.clear();
 		codeBuffer.shrink_to_fit();
 		exports.clear();

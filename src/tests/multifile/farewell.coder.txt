@@ -1,0 +1,48 @@
+.\farewell.xm:1:7       File
+.\farewell.xm:1:7         ExternDecl  WriteFile
+.\farewell.xm:1:10          ReturnSpec
+.\farewell.xm:1:10            Type  b
+.\farewell.xm:1:32          ParamList
+.\farewell.xm:1:23            Param  handle
+.\farewell.xm:1:23              Type  u64
+.\farewell.xm:1:41            Param  buffer
+.\farewell.xm:1:41              Type  u8
+.\farewell.xm:1:57            Param  bytesToWrite
+.\farewell.xm:1:57              Type  u32
+.\farewell.xm:1:72            Param  bytesWritten
+.\farewell.xm:1:72              Type  u32
+.\farewell.xm:1:94            Param  overlapped
+.\farewell.xm:1:94              Type  u8
+.\farewell.xm:2:1         ExternDecl  GetStdHandle
+.\farewell.xm:2:12          ReturnSpec
+.\farewell.xm:2:12            Type  u64
+.\farewell.xm:2:37          ParamList
+.\farewell.xm:2:25            Param  stdHandleId
+.\farewell.xm:2:25              Type  i32
+.\farewell.xm:4:1         FuncDecl  farewell  →  [0(prologue), 4(xor_eax_eax), 1(epilogue)]
+.\farewell.xm:4:1           ReturnSpec
+.\farewell.xm:4:1             Type  i32
+.\farewell.xm:4:13          ParamList
+.\farewell.xm:4:16          Block
+.\farewell.xm:5:5             VarDecl  h  →  [11(mov_rsp_off8_rax)]
+.\farewell.xm:5:5               Type  u64
+.\farewell.xm:5:13              Call  →  [3(call_rel32)]
+.\farewell.xm:5:13                Ident  GetStdHandle
+.\farewell.xm:5:13                ArgList
+.\farewell.xm:5:26                  IntLit  →  [5(mov_ecx_imm32)]  slot=1  val=4294967285
+.\farewell.xm:6:5             VarDecl  msg
+.\farewell.xm:6:5               Type  u8
+.\farewell.xm:6:16              StringLit
+.\farewell.xm:7:5             VarDecl  written
+.\farewell.xm:7:5               Type  u64
+.\farewell.xm:8:5             ExprStmt
+.\farewell.xm:8:5               Call  →  [3(call_rel32)]
+.\farewell.xm:8:5                 Ident  WriteFile
+.\farewell.xm:8:5                 ArgList
+.\farewell.xm:8:15                  Ident  h  →  [6(mov_rcx_rsp_off8)]  slot=1
+.\farewell.xm:8:18                  Ident  msg  →  [7(lea_rdx_rip32)]  slot=2
+.\farewell.xm:8:23                  MemberAccess  length  →  [8(mov_r8d_imm32)]  slot=3  val=19
+.\farewell.xm:8:23                    Ident  msg
+.\farewell.xm:8:27                  AddressOf  →  [9(lea_r9_rsp_off8)]  slot=4  val=48
+.\farewell.xm:8:36                    Ident  written
+.\farewell.xm:8:45                  NullLit  →  [10(mov_rsp32_imm0)]  slot=5

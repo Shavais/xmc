@@ -1,0 +1,48 @@
+.\farewell.xm:1:7         File
+.\farewell.xm:1:7           ExternDecl  kernel32:WriteFile
+.\farewell.xm:1:10            ReturnSpec   : rax
+.\farewell.xm:1:10              Type  b
+.\farewell.xm:1:32            ParamList
+.\farewell.xm:1:23              Param  handle : rcx
+.\farewell.xm:1:23                Type  u64
+.\farewell.xm:1:41              Param  buffer : rdx
+.\farewell.xm:1:41                Type  *u8
+.\farewell.xm:1:57              Param  bytesToWrite : r8
+.\farewell.xm:1:57                Type  u32
+.\farewell.xm:1:72              Param  bytesWritten : r9
+.\farewell.xm:1:72                Type  *u32
+.\farewell.xm:1:94              Param  overlapped
+.\farewell.xm:1:94                Type  *u8
+.\farewell.xm:2:1           ExternDecl  kernel32:GetStdHandle
+.\farewell.xm:2:12            ReturnSpec   : rax
+.\farewell.xm:2:12              Type  u64
+.\farewell.xm:2:37            ParamList
+.\farewell.xm:2:25              Param  stdHandleId : rcx
+.\farewell.xm:2:25                Type  i32
+.\farewell.xm:4:1           FuncDecl  farewell
+.\farewell.xm:4:1             ReturnSpec  
+.\farewell.xm:4:1               Type  i32
+.\farewell.xm:4:13            ParamList
+.\farewell.xm:4:16            Block
+.\farewell.xm:5:5               VarDecl  h
+.\farewell.xm:5:5                 Type  u64
+.\farewell.xm:5:13                Call
+.\farewell.xm:5:13                  Ident  GetStdHandle
+.\farewell.xm:5:13                  ArgList
+.\farewell.xm:5:26                    IntLit  4294967285
+.\farewell.xm:6:5               VarDecl  msg
+.\farewell.xm:6:5                 Type  u8[]
+.\farewell.xm:6:16                StringLit  "Farewell from xmc!\n"
+.\farewell.xm:7:5               VarDecl  written
+.\farewell.xm:7:5                 Type  u64
+.\farewell.xm:8:5               ExprStmt
+.\farewell.xm:8:5                 Call
+.\farewell.xm:8:5                   Ident  WriteFile
+.\farewell.xm:8:5                   ArgList
+.\farewell.xm:8:15                    Ident  h
+.\farewell.xm:8:18                    Ident  msg
+.\farewell.xm:8:23                    MemberAccess  length
+.\farewell.xm:8:23                      Ident  msg
+.\farewell.xm:8:27                    AddressOf
+.\farewell.xm:8:36                      Ident  written
+.\farewell.xm:8:45                    NullLit

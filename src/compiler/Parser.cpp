@@ -106,10 +106,6 @@ struct ParseCtx {
     BS::thread_pool<>& pool;
     const CompileJob&  job;
 
-    // Leaf nodes collected during Drive(). Drained by Morpher::MorphTree after
-    // Drive() returns — all pendingChildren have been initialised by then.
-    std::vector<ParseTreeNode*> leaves;
-
     // Source cursor
     uint32_t pos  = 0;
     uint32_t line = 1;
@@ -197,16 +193,31 @@ struct ParseCtx {
     }
 
     // Add a leaf node that was created inline (not via pushNode/popNode).
-    // Sets parent, adds to current frame's children, and records it for
-    // Morpher::MorphTree to process after Drive() completes.
+    // Sets parent, adds to current frame's children, and immediately submits
+    // a Morpher task for it. The task captures references to the long-lived
+    // Xmo, SymbolTable, and CompileJob (all outlive the pool task).
     void addLeaf(ParseTreeNode* leaf)
     {
         addChild(leaf);
-        leaves.push_back(leaf);
+        pool.detach_task([leaf,
+                          &x = xmo,
+                          &s = symbols,
+                          &j = job,
+                          &p = pool]()
+        {
+            Morpher::MorphNoun(leaf, x, s, j, p);
+        });
     }
 
-    // Commit pending children to the arena, then pop.
-    // Returns the completed node.
+    // Commit pending children to the arena, pop, then apply the morpher
+    // completion protocol for this node.
+    //
+    // Leaves (childCount==0): submit a pool Morpher task immediately.
+    //
+    // Interior nodes: mark parser_complete (seq_cst), then check whether all
+    // children have already been morphed. If so, claim morphed and call
+    // MorphNoun inline on the parser thread. Otherwise a child's PropagateUp
+    // will handle it when the last child finishes.
     ParseTreeNode* popNode()
     {
         assert(!stack.empty());
@@ -218,15 +229,28 @@ struct ParseCtx {
             std::memcpy(n->children, f.children.data(),
                         n->childCount * sizeof(ParseTreeNode*));
         }
-        // Initialise pendingChildren so the Morpher can use O(1) "is this
-        // parent ready?" checks via atomic decrement-and-compare.
-        n->pendingChildren.store(uint16_t(n->childCount), std::memory_order_relaxed);
-        // Leaf nodes (no children) are recorded for Morpher::MorphTree to
-        // process after Drive() returns and all pendingChildren are set.
-        if (n->childCount == 0) {
-            leaves.push_back(n);
-        }
         stack.pop_back();
+
+        if (n->childCount == 0) {
+            pool.detach_task([n,
+                              &x = xmo,
+                              &s = symbols,
+                              &j = job,
+                              &p = pool]()
+            {
+                Morpher::MorphNoun(n, x, s, j, p);
+            });
+        } else {
+            // Release-fence via seq_cst store: ensures childCount and children
+            // are visible before parser_complete is observed as true by any
+            // concurrent PropagateUp on a pool thread.
+            n->parser_complete.store(true, std::memory_order_seq_cst);
+            if (n->morphed_children.load(std::memory_order_seq_cst) == n->childCount) {
+                if (!n->morphed.exchange(true, std::memory_order_acq_rel)) {
+                    Morpher::MorphNoun(n, xmo, symbols, job, pool);
+                }
+            }
+        }
         return n;
     }
 
@@ -440,16 +464,32 @@ static void AttachReturnSpec(ParseCtx&      ctx,
     ret->srcStart= ctx.tokenStart;
 
     // Wire type as sole child of ret.
-    ret->childCount      = 1;
-    ret->pendingChildren.store(1, std::memory_order_relaxed);
-    ret->children        = ctx.xmo.arena.NewArray<ParseTreeNode*>(1);
-    ret->children[0]     = type;
-    type->parent         = ret;
+    ret->childCount  = 1;
+    ret->children    = ctx.xmo.arena.NewArray<ParseTreeNode*>(1);
+    ret->children[0] = type;
+    type->parent     = ret;
 
     // Attach ret to the ExternDecl/FuncDecl on the stack top.
     ctx.addChild(ret);
-    // type is a leaf — record it for Morpher::MorphTree.
-    ctx.leaves.push_back(type);
+
+    // type is a leaf: submit its Morpher task immediately.
+    ctx.pool.detach_task([type,
+                          &x = ctx.xmo,
+                          &s = ctx.symbols,
+                          &j = ctx.job,
+                          &p = ctx.pool]()
+    {
+        Morpher::MorphNoun(type, x, s, j, p);
+    });
+
+    // ret is now closed (1 child, already committed). Apply the same
+    // completion protocol as popNode() for interior nodes.
+    ret->parser_complete.store(true, std::memory_order_seq_cst);
+    if (ret->morphed_children.load(std::memory_order_seq_cst) == 1) {
+        if (!ret->morphed.exchange(true, std::memory_order_acq_rel)) {
+            Morpher::MorphNoun(ret, ctx.xmo, ctx.symbols, ctx.job, ctx.pool);
+        }
+    }
 }
 
 static uint16_t DispatchIdent(ParseCtx& ctx)
@@ -1319,7 +1359,36 @@ static void OnLeaveState(uint16_t fromState, uint16_t toState,
     if (cc == CC_DQUOTE && fromState == S_INIT_STRLIT) {
         auto* lit      = ctx.allocNode(ParseKind::StringLit);
         lit->srcStart  = ctx.tokenStart + 1;                    // skip opening '"'
-        lit->srcLen    = ctx.pos - ctx.tokenStart - 1;          // content length
+        lit->srcLen    = ctx.pos - ctx.tokenStart - 1;          // source content length
+
+        // Resolve escape sequences and store the byte content in the arena.
+        // name.str/name.len hold the escape-resolved bytes (persistent in arena).
+        // intValue holds the byte count for quick access.
+        uint32_t srcEnd  = lit->srcStart + lit->srcLen;
+        uint8_t* buf     = ctx.xmo.arena.NewArray<uint8_t>(lit->srcLen + 1);
+        uint32_t byteLen = 0;
+        for (uint32_t i = lit->srcStart; i < srcEnd; ++i) {
+            char c = ctx.source[i];
+            if (c == '\\' && i + 1 < srcEnd) {
+                ++i;
+                switch (ctx.source[i]) {
+                case 'n':  buf[byteLen++] = '\n'; break;
+                case 't':  buf[byteLen++] = '\t'; break;
+                case 'r':  buf[byteLen++] = '\r'; break;
+                case '\\': buf[byteLen++] = '\\'; break;
+                case '"':  buf[byteLen++] = '"';  break;
+                case '0':  buf[byteLen++] = '\0'; break;
+                default:   buf[byteLen++] = ctx.source[i]; break;
+                }
+            } else {
+                buf[byteLen++] = static_cast<uint8_t>(c);
+            }
+        }
+        buf[byteLen] = 0;
+        lit->name.str = reinterpret_cast<const char*>(buf);
+        lit->name.len = byteLen;
+        lit->intValue  = byteLen;
+
         ctx.addLeaf(lit); // leaf: seed morph queue directly
     }
 }
@@ -1449,12 +1518,9 @@ void Parser::Parse(
     if (job.ParserLog) {
         EmitParserLog(xmo.parseTree, ctx.stack, xmo.name, source);
     }
-
-    // Process the collected leaf nodes and write the morpher log.
-    // Drive() has completed, so all pendingChildren are correctly initialised.
-    if (!job.ErrorOccurred.load(std::memory_order_relaxed)) {
-        Morpher::MorphTree(xmo, symbols, job, ctx.leaves);
-    }
+    // Morpher tasks for leaf nodes were submitted to the pool during Drive().
+    // The caller (Compiler) drains the pool after all file tasks complete,
+    // then calls Morpher::MorphTree to write the per-file morpher log.
 }
 
 } // namespace xmc

@@ -1,0 +1,12 @@
+Code buffer: 31 bytes
+
+48 83 EC 28 E8 00 00 00 00 E8 00 00 00 00 B9 00 
+00 00 00 E8 00 00 00 00 33 C0 48 83 C4 28 C3 
+
+Relocations: 3
+  [0] offset=5  kind=0  target=greet
+  [1] offset=10  kind=0  target=farewell
+  [2] offset=20  kind=0  target=ExitProcess
+
+Functions:
+  main @ 0

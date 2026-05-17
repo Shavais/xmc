@@ -1,0 +1,52 @@
+.\hello.xm:3:7          File
+.\hello.xm:3:7            ExternDecl  WriteFile
+.\hello.xm:3:10             ReturnSpec
+.\hello.xm:3:10               Type  b
+.\hello.xm:3:32             ParamList
+.\hello.xm:3:23               Param  handle
+.\hello.xm:3:23                 Type  u64
+.\hello.xm:4:14               Param  buffer
+.\hello.xm:4:14                 Type  u8
+.\hello.xm:5:14               Param  bytesToWrite
+.\hello.xm:5:14                 Type  u32
+.\hello.xm:6:14               Param  bytesWritten
+.\hello.xm:6:14                 Type  u32
+.\hello.xm:7:14               Param  overlapped
+.\hello.xm:7:14                 Type  u8
+.\hello.xm:11:1           ExternDecl  GetStdHandle
+.\hello.xm:11:12            ReturnSpec
+.\hello.xm:11:12              Type  u64
+.\hello.xm:11:37            ParamList
+.\hello.xm:11:25              Param  stdHandleId
+.\hello.xm:11:25                Type  i32
+.\hello.xm:15:1           ExternDecl  ExitProcess
+.\hello.xm:15:28            ParamList
+.\hello.xm:15:17              Param  exitCode
+.\hello.xm:15:17                Type  u32
+.\hello.xm:20:1           FuncDecl  main  →  [0(prologue), 4(xor_eax_eax), 1(epilogue)]
+.\hello.xm:20:1             ReturnSpec
+.\hello.xm:20:1               Type  i32
+.\hello.xm:20:9             ParamList
+.\hello.xm:20:12            Block
+.\hello.xm:21:5               VarDecl  h  →  [11(mov_rsp_off8_rax)]
+.\hello.xm:21:5                 Type  u64
+.\hello.xm:21:13                Call  →  [3(call_rel32)]
+.\hello.xm:21:13                  Ident  GetStdHandle
+.\hello.xm:21:13                  ArgList
+.\hello.xm:21:26                    IntLit  →  [5(mov_ecx_imm32)]  slot=1  val=4294967285
+.\hello.xm:23:5               VarDecl  msg
+.\hello.xm:23:5                 Type  u8
+.\hello.xm:23:16                StringLit
+.\hello.xm:24:5               VarDecl  written
+.\hello.xm:24:5                 Type  u64
+.\hello.xm:26:5               ExprStmt
+.\hello.xm:26:5                 Call  →  [3(call_rel32)]
+.\hello.xm:26:5                   Ident  WriteFile
+.\hello.xm:26:5                   ArgList
+.\hello.xm:26:15                    Ident  h  →  [6(mov_rcx_rsp_off8)]  slot=1
+.\hello.xm:26:18                    Ident  msg  →  [7(lea_rdx_rip32)]  slot=2
+.\hello.xm:26:23                    MemberAccess  length  →  [8(mov_r8d_imm32)]  slot=3  val=14
+.\hello.xm:26:23                      Ident  msg
+.\hello.xm:26:27                    AddressOf  →  [9(lea_r9_rsp_off8)]  slot=4  val=48
+.\hello.xm:26:36                      Ident  written
+.\hello.xm:26:45                    NullLit  →  [10(mov_rsp32_imm0)]  slot=5

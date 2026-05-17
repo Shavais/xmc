@@ -12,7 +12,7 @@ Read this first. Then read Under The Hood.txt for architecture depth.
 NEVER use git worktrees. Work directly in the main project directory:
     C:\Shavais\Projects\C++\xmc\
 
-NEVER run xmc.exe from the project root or pass ".xm" as the file argument.
+NEVER run xmc.exe from the project root or pass ".xm" or ".xmc" as the file argument.
 The correct invocation is from inside the test directory, passing just the base name:
     cd C:\Shavais\Projects\C++\xmc\src\tests\hello
     xmc.exe hello                          (NOT "hello.xm", NOT "hello.xmc")
@@ -44,192 +44,274 @@ C:\Shavais\Projects\C++\xmc\
       Parser.cpp                — character-driven state machine; populates xmo.arena
       Morpher.h                 — MorphNoun, MorphTree declarations
       Morpher.cpp               — typing rules (kExprDesc, kNodeDesc), PropagateUp, DeclareSymbol
-      Reviewer.h                — NO-OP STUB; next stage to implement
-      Emitter.h                 — NO-OP STUB; EmitPhase1 and EmitPhase2
-      SymbolTable.h             — Symbol struct (with declNode field), InternedString, SymbolTable
-      Xmo.h                     — Xmo struct; arena, ownedSymbols, scopeTree, morphMtx_
+      Reviewer.h/cpp            — WORKING; sequential per-file; assigns paramSlots, totalStackSize,
+                                  Symbol::offset, funcFlags
+      Coder.h/cpp               — WORKING; sequential per-file; populates codeBlocks on parse nodes
+      Emitter.h/cpp             — WORKING; Phase1 sequential per-file, Phase2 single-threaded COFF
+      CodeBlock.h               — CodeBlocks table (IDs 0-11), BlockIds struct
+      SymbolTable.h/cpp         — Symbol struct (with declNode, offset), InternedString, SymbolTable
+      Xmo.h                     — Xmo struct; arena, codeBuffer, relocs, relocTargetNames, funcSymbols
       Xmo.cpp                   — LoadFrom, LoadParseTree, ResetForRegeneration
     tests\
       hello\
-        hello.xm                — canonical integration test; goal is hello.exe end-to-end
+        hello.xm                — single-file integration test; WORKING end-to-end
+        hello.xmc               — project file (CRT=none, kernel32.lib, all logs enabled)
+      multifile\
+        greet.xm                — defines greet() which prints "Greetings from xmc!\n"
+        farewell.xm             — defines farewell() which prints "Farewell from xmc!\n"
+        main.xm                 — calls greet(), farewell(), ExitProcess(0)
+        multifile.xmc           — project file (CRT=none, kernel32.lib)
     tool\
       BS_thread_pool.hpp        — thread pool used by Compiler.cpp
-      FileMapping.h/.cpp        — memory-mapped file abstraction (used by Compiler.cpp)
+      FileMapping.h/.cpp        — memory-mapped file abstraction
+      Coff.h/cpp                — COFF .obj writer used by Emitter Phase 2
       Logger.h                  — logging utilities
 
 
 3. BUILD AND RUN
 ================
 
-Build (from project root, requires Visual Studio MSBuild in PATH):
-    MSBuild xmc.sln /p:Configuration=Debug /p:Platform=x64
+Build (from project root):
+    MSBuild xmc.vcxproj /p:Configuration=Debug /p:Platform=x64
 
-Or open xmc.sln in Visual Studio and build normally.
+MSBuild is typically at:
+    C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe
 
-The output executable is typically:
-    C:\Shavais\Projects\C++\xmc\x64\Debug\xmc.exe
+The output executable is:
+    C:\Shavais\Projects\C++\xmc\bin\x64\Debug\xmc.exe
 
-Run the hello test:
+Run the hello test (working):
     cd C:\Shavais\Projects\C++\xmc\src\tests\hello
-    C:\Shavais\Projects\C++\xmc\x64\Debug\xmc.exe hello
+    C:\Shavais\Projects\C++\xmc\bin\x64\Debug\xmc.exe hello
+    .\hello.exe   →  prints "Hello, world!"
 
-If xmc.exe is locked (link fails with "cannot open file xmc.exe"), a stale xmc.exe process is running. Find it and kill it:
+Run the multifile test (working):
+    cd C:\Shavais\Projects\C++\xmc\src\tests\multifile
+    C:\Shavais\Projects\C++\xmc\bin\x64\Debug\xmc.exe multifile
+    .\multifile.exe   →  prints "Greetings from xmc!" then "Farewell from xmc!"
+
+If xmc.exe is locked (link fails with "cannot open file xmc.exe"), a stale xmc.exe process
+is running. Kill it:
     Get-Process xmc -ErrorAction SilentlyContinue | Stop-Process -Force
 
 
 4. IMPLEMENTATION STATUS
 ========================
 
-Stage         Status      Notes
------------   ---------   -----------------------------------------------
-Parser        Working     Character-driven, builds full parse tree in arena
-Morpher       Working     Temporary: sequential leaf drain; single-file only - no subscriber mechanism yet
-Reviewer      STUB        Next to implement; see §5 for plan
-Coder         NOT STARTED Follows Reviewer; see §6 for plan
-Emitter       STUB        No-op; see §7 for plan
-Linker        Working     Calls link.exe via vswhere
+Stage              Status        Notes
+-----------        ---------     -----------------------------------------------
+Parser             Working       Character-driven state machine; builds parse tree in arena.
+                                 Submits leaf MorphNoun tasks to the pool during Drive().
+Morpher            Working       Concurrent per-leaf-node via pool tasks. Bottom-up propagation
+                                 via PropagateUp. Cross-file refs resolved via SubscribeOrResolve.
+Reviewer           Working       Sequential per file; assigns paramSlots, totalStackSize,
+                                 Symbol::offset, funcFlags=0
+Coder              Working       Sequential per file; populates node codeBlocks from CodeBlocks table
+Emitter Phase 1    Working       Sequential per file; fills xmo.codeBuffer, accumulates relocs
+Emitter Phase 2    Working       Single-threaded; single-pass COFF assembly. Project-local functions
+                                 get defined symbol indices; DLL imports get external symbol entries.
+                                 String literal .rdata symbols are IMAGE_SYM_CLASS_STATIC, looked
+                                 up via a per-xmo localStrMap (not the cross-xmo symbolMap).
+Linker             Working       Calls link.exe via vswhere; CRT=none uses /ENTRY:main /NODEFAULTLIB
 
-Current capability: hello.xm parses and morphs without errors.
-Blocks remaining before hello.exe works: Reviewer, Coder, Emitter.
-
-
-5. REVIEWER PLAN (implement this next)
-=======================================
-
-The Reviewer runs after the Morpher has converged for each Xmo. It does codegen-prep work
-that needs fully-resolved types but precedes block selection.
-
-Fields the Reviewer writes (all currently zero in ParseTreeNode; declared in Parser.h):
-
-    paramSlot      — u8 on each arg-expression child of ArgList
-                     1=rcx, 2=rdx, 3=r8, 4=r9, 5=[rsp+32], 6=[rsp+40], … 0=unassigned
-    totalStackSize — u32 on FuncDecl nodes; total prologue bytes for sub rsp,N
-    funcFlags      — u32 on FuncDecl nodes; bit 0=isFallible, bit 1=needsListeningFlavor,
-                     bit 2=needsDiscardingFlavor (all zero for hello.xm)
-
-Symbol field written by the Reviewer (already declared on Symbol):
-    offset         — u32; rsp-relative offset of each local variable's stack slot
-
-ParseTreeNode fields to be written by the Reviewer:
-    paramSlot
-    totalStackSize
-    funcFlags 
-
-Stack frame layout (Windows x64 ABI):
-    N ≡ 8 (mod 16) — so that rsp is 16-byte aligned at each call site inside the function
-    rsp+0  .. rsp+31   shadow space (must always be allocated, even for 0-arg callees)
-    rsp+32 .. rsp+N-1  extra arg slots: 8 bytes per arg beyond 4 in the deepest call
-    rsp+N  ..          locals; Symbol::offset = N + 8*i in declaration order
-    totalStackSize = 32 + (extra_arg_slots*8) + local_bytes, rounded to next ≡ 8 (mod 16)
-
-Register assignment for call sites:
-    Walk each Call node; read sym->declNode (ExternDecl or FuncDecl).
-    Match each child of ArgList to the corresponding child of callee's ParamList.
-    Read Param::regHint: "rcx"→1, "rdx"→2, "r8"→3, "r9"→4, no regHint→5,6,…
-    Write paramSlot on each arg expression.
-
-For hello.xm, the functions are:
-    GetStdHandle(i32:rcx) → one arg, paramSlot=1
-    WriteFile(u64:rcx, *u8:rdx, u32:r8, *u32:r9, *u8) → paramSlots 1,2,3,4,5
-    ExitProcess(u32:rcx) → one arg, paramSlot=1
-    main() → no args
-
-hello.xm local variables in main:
-    h       (u64): offset = totalStackSize + 0
-    written (u64): offset = totalStackSize + 8
-
-For hello.xm main: deepest call is WriteFile (5 args → 1 extra slot at rsp+32).
-    totalStackSize = 32 (shadow) + 8 (1 extra slot) + 16 (h and written) = 56
-    56 mod 16 = 8 → ≡ 8 (mod 16) ✓ — no rounding needed.
-
-Implementation steps:
-    1. Create Reviewer.cpp implementing static void Reviewer::Review(Xmo&, SymbolTable&, const CompileJob&)
-    2. Walk each FuncDecl in xmo.ownedSymbols or by iterating the parse tree
-    3. For each function:
-         a. Walk ArgList children of every Call and assign paramSlot from callee ParamList regHints
-         b. Count deepest-call extra args; count locals; compute totalStackSize
-         c. Set funcFlags (all zero for hello.xm)
-         d. Assign Symbol::offset to each VarDecl local
+Current capability:
+  hello.xm    → hello.exe    → "Hello, world!"        — fully working end-to-end.
+  multifile   → multifile.exe → "Greetings from xmc!" — fully working end-to-end.
+                                "Farewell from xmc!"
 
 
-6. CODER PLAN (after Reviewer)
-================================
+5. THE MULTIFILE TEST
+=====================
 
-The Coder runs in a thread per .xm file, it walks the parse tree and populates codeBlocks 
-on each node — indices into a unified CodeBlocks table mapping to byte sequences. For 
-hello.xm the Coder only needs to handle: ExternDecl (no bytes, but import record), 
-FuncDecl prologue/epilogue, VarDecl, Assign, Call with args at known paramSlots, Return.
+Source files in src/tests/multifile/:
 
-The Coder does NOT write bytes; it selects code-block indices. The Emitter reads those
-indices to emit actual bytes.
+  greet.xm     Calls GetStdHandle + WriteFile to print "Greetings from xmc!\n".
+               Defines i32 greet().
 
-Implementation is not yet planned in detail. Defer until Reviewer is complete and tested.
+  farewell.xm  Calls GetStdHandle + WriteFile to print "Farewell from xmc!\n".
+               Defines i32 farewell().
+
+  main.xm      Calls greet(), farewell(), then ExitProcess(0).
+               main.xm's ExternDecl for ExitProcess is resolved within the file.
+               The calls to greet() and farewell() are cross-file references that
+               require the subscriber index (Step 1 below) to resolve.
+
+Expected output when the exe runs:
+    Greetings from xmc!
+    Farewell from xmc!
+
+COFF layout produced by Emitter Phase 2 (once working):
+  .text section: greet body + farewell body + main body (order = iteration order of xmos)
+  .rdata section: "Greetings from xmc!\n" + "Farewell from xmc!\n" as named symbols
+  Relocations: GetStdHandle, WriteFile (external), greet and farewell (project-local defined)
+  Symbols: greet, farewell, main defined as IMAGE_SYM_CLASS_EXTERNAL in .text
 
 
-7. EMITTER PLAN (after Coder)
-===============================
+6. SUBSCRIBER INDEX (IMPLEMENTED)
+===================================
 
-Two phases:
-  Phase 1 (per-Xmo, parallelizable): walk parse tree, copy bytes from CodeBlocks table,
-           accumulate relocations, populate Xmo::codeBuffer.
-  Phase 2 (single-threaded): serialize each Xmo to .xmo; write COFF .obj via Coff class;
-           Linker calls link.exe to produce .exe.
+SubscribeOrResolve is implemented in SymbolTable.h/cpp. When an Ident node's Morpher task
+cannot find the referenced symbol (because the declaring file's Morpher hasn't run yet),
+it registers a continuation instead of reporting an error.
 
-For hello.xm:
-  - .text section: main() body (prologue, calls, epilogue)
-  - .rdata section: "Hello, world!\n" string
-  - import relocations for WriteFile, GetStdHandle, ExitProcess in kernel32.dll
-  - COFF export for main (entry point for the linker)
+SymbolEntry (SymbolTable.cpp, internal) has:
+    std::vector<std::function<void(Symbol*)>> waiters;
 
-Implementation is not yet planned in detail. Defer until Coder is complete and tested.
+SymbolTable::SubscribeOrResolve (SymbolTable.cpp):
+    Takes the shard write lock; does the same prefix-match resolution as ResolveSymbol.
+    If resolved: returns the symbol (caller sets declaredSymbol and propagates normally).
+    If not: interns the name (creating the entry if new via InternStringUnderLock),
+            pushes onResolved into entry.waiters, returns nullptr.
+
+SymbolTable::InternSymbol:
+    After pushing the new Symbol into entry.candidates, if outWaiters is non-null,
+    moves entry.waiters into *outWaiters before releasing the lock.
+    Caller (DeclareSymbol in Morpher.cpp) submits each waiter as a pool.detach_task.
+
+Morpher.cpp ExprRule::Ident:
+    Symbol* sym = symbols.SubscribeOrResolve(name, path.data(), path.size(),
+        [n, &xmo, &symbols, &job, &pool](Symbol* s) {
+            n->declaredSymbol = s;
+            if (s->declNode) CopyTypeShape(n, s->declNode);
+            else n->baseType = s->baseType.load(std::memory_order_relaxed);
+            PropagateUp(n, xmo, symbols, job, pool);
+        });
+    if (!sym) return false;  // deferred; ApplyRule returns false; MorphNoun skips PropagateUp
+    // ... set declaredSymbol, copy type, fall through to PropagateUp normally
+
+ApplyRule (and ApplyExprRule, ApplyNodeRule) return bool:
+    true  = rule applied, caller should PropagateUp
+    false = deferred (Ident subscribed); callback will call PropagateUp when symbol arrives
+
+
+7. CONCURRENCY MODEL
+=====================
+
+One pool task per leaf node for Morpher; one pool task per file for Reviewer/Coder/Emitter.
+Morpher tasks are IMPLEMENTED. Reviewer/Coder/Emitter Phase 1 tasks are the next steps.
+
+7a. Concurrent Morphing per noun (IMPLEMENTED)
+------------------------------------------------
+Leaf MorphNoun tasks are submitted by the Parser during Drive(), not by MorphTree afterward.
+
+  Parser.cpp addLeaf():
+    pool.detach_task([leaf, &xmo, &symbols, &job, &pool]() {
+        Morpher::MorphNoun(leaf, xmo, symbols, job, pool);
+    });
+
+  Parser.cpp popNode() for interior nodes (childCount > 0):
+    n->parser_complete.store(true, std::memory_order_seq_cst);
+    if (n->morphed_children.load(std::memory_order_seq_cst) == n->childCount)
+        if (!n->morphed.exchange(true, std::memory_order_acq_rel))
+            Morpher::MorphNoun(n, xmo, symbols, job, pool);  // inline, no new task
+
+  Three-field protocol on ParseTreeNode:
+    morphed_children  atomic<uint32_t>  incremented seq_cst by each child's PropagateUp
+    parser_complete   atomic<bool>      stored true seq_cst by popNode() when node closes
+    morphed           atomic<bool>      test-and-set; winner runs this node's morph rule
+
+  The seq_cst ordering on the store/load pair eliminates the lost-wakeup race: if the
+  parser closes a node before the last child's morpher increments morphed_children, the
+  parser sees the complete count and wins morphed; if the morpher increments first, it
+  sees parser_complete=true and wins morphed. Exactly one thread processes each node.
+
+  MorphNoun(node, xmo, symbols, job, pool):
+    if (ApplyRule(node, ...)) PropagateUp(node, ...);
+    // ApplyRule returns false for deferred Idents; callback calls PropagateUp directly.
+
+  PropagateUp walks parent pointers, applying the same morphed_children / parser_complete /
+  morphed.exchange protocol at each ancestor inline (no new pool tasks for interior nodes).
+
+  Compiler.cpp RunModifiedPipeline:
+    fileFutures.wait();   // parser tasks complete (morpher tasks may still run)
+    pool.wait();          // drain all remaining morpher and subscriber callback tasks
+    // then Reviewer, Coder, Emitter Phase 1 run (sequentially for now)
+
+  MorphTree (Morpher.cpp): only writes the morpher log if requested. All morphing is done
+  by MorphNoun. MorphTree takes no leaves parameter.
+
+7b. Concurrent Reviewing per file
+----------------------------------
+In Compiler.cpp RunReviewer, replace the sequential loop with parallel pool tasks:
+
+    BS::multi_future<void> futures;
+    for (auto& xmo : s.xmos) {
+        Xmo* x = xmo.get();
+        futures.push_back(pool.submit_task([&s, x] {
+            if (!s.job.ErrorOccurred.load(std::memory_order_relaxed))
+                Reviewer::Review(*x, s.symbols, s.job);
+        }));
+    }
+    futures.wait();
+
+  Safety: Reviewer only reads from the parse tree (written by Parser/Morpher, now complete).
+  It writes only its own xmo's nodes (paramSlot, totalStackSize, funcFlags) and only the
+  symbols it owns (Symbol::offset). No two Reviewer tasks share an xmo or its symbols.
+  The SymbolTable is read-only after Morpher convergence.
+
+7c. Concurrent Coding per file
+--------------------------------
+Same pattern for RunCoder. Coder reads Reviewer-written fields (paramSlot, totalStackSize)
+and writes codeBlocks on nodes. No sharing between files.
+
+7d. Concurrent Emitter Phase 1 per file
+-----------------------------------------
+Same pattern for RunEmitterPhase1. Emitter Phase 1 reads codeBlocks (written by Coder, now
+complete) and writes xmo.codeBuffer / xmo.relocs / xmo.relocTargetNames / xmo.funcSymbols.
+No sharing between files.
+
+7e. Emitter Phase 2 (stays single-threaded)
+---------------------------------------------
+Phase 2 is already a single-threaded COFF assembly pass. It reads all xmos' codeBuffers
+and relocs (written by Phase 1, now complete). No change needed.
 
 
 8. SETTLED DESIGN DECISIONS (do not relitigate)
 =================================================
 
-Parser → Morpher handoff:
-  The Parser collects leaf nodes (childCount==0) into a local vector during Drive().
-  After Drive() returns, Parser::Parse calls Morpher::MorphTree(xmo, symbols, job, leaves).
-  MorphTree processes leaves sequentially. This is correct because all pendingChildren
-  counters are correctly initialized by popNode() before any leaf is processed.
-  DO NOT submit pool tasks from inside Drive() — this causes pendingChildren race conditions.
-  [This plan is temporary. See Concurrent Morpher deferral below.]
+Parser submits leaf MorphNoun tasks during Drive():
+  addLeaf() calls pool.detach_task immediately. popNode() closes each interior node and
+  applies the morphed_children / parser_complete / morphed.exchange protocol to decide
+  whether to also run MorphNoun inline. This replaced the old "collect leaves, then drain"
+  design. DO NOT revert to calling MorphTree to submit tasks after Drive() returns.
+
+Three-field morphing protocol instead of pendingChildren:
+  ParseTreeNode has morphed_children (atomic<uint32_t>), parser_complete (atomic<bool>),
+  morphed (atomic<bool>). pendingChildren is gone. The seq_cst store/load pair is required
+  to prevent lost wakeups — do not downgrade to relaxed or acq/rel ordering on those two ops.
+
+pool.detach_task for fire-and-forget morpher tasks:
+  pool.submit_task is [[nodiscard]] — the returned future must be stored or the compiler
+  warns. Use pool.detach_task for leaf morpher tasks and subscriber callbacks.
 
 No pool.wait() from inside a pool task:
-  Parser runs as a pool task. Calling pool.wait() from within it either deadlocks or
-  returns before submitted tasks complete. MorphTree is called directly by the Parser task,
-  not submitted as a separate pool task.
+  Parser runs as a pool task. pool.wait() from within it deadlocks or returns early.
+  pool.wait() is called from the main thread (RunModifiedPipeline) after fileFutures.wait().
 
-Symbol::declNode on Symbol (not a per-run declSite map):
+Symbol::declNode on Symbol:
   When DeclareSymbol creates a symbol, it stores sym->declNode = node.
-  Morpher::Ident reads sym->declNode to copy types instead of looking up a side table.
-  This is required for the concurrent Morpher variant.
+  Ident and Call nodes read sym->declNode to copy type shape. Required for concurrent Morpher.
 
 No morphQueue on Xmo:
-  The old Xmo::morphQueue field was removed. The leaves vector lives as a local in ParseCtx.
-  Xmo::ownedSymbols (for symbols) and Xmo::scopeTree (for scopes) are the only Morpher
-  outputs accumulated on Xmo.
+  Removed. No leaves vector either — leaf tasks are submitted inline from addLeaf/popNode.
 
-PushOwnedSymbol / PushScopeRecord are mutex-guarded:
-  These are the only Morpher writes to Xmo that need synchronization (for the future
-  concurrent variant). The parse tree fields themselves are written by only one thread at
-  a time in the current sequential design.
+String literal .rdata symbols use IMAGE_SYM_CLASS_STATIC + per-xmo localStrMap:
+  String literals are function-local; their COFF backing symbols must not be external.
+  EmitPhase2 creates a fresh localStrMap per xmo. Phase 1 stores the bare variable name
+  as the relocation target; Phase 2 looks it up in the per-xmo map. This avoids both
+  cross-xmo name collisions and LNK2005 multiply-defined errors.
 
-Concurrent Morpher is deferred:
-  The subscriber mechanism (§2c in UTH) is needed before concurrent pool-task-per-leaf
-  morphing is safe. Without it, Ident tasks race with ExternDecl tasks.
-  All the atomic machinery is in place (pendingChildren, Xmo::morphMtx_). Enabling
-  concurrent morphing is a matter of: replacing leaf vector drain with pool task submission
-  and implementing ResolveSymbol → subscribe-on-not-found.
+Emitter Phase 2 is single-pass:
+  All xmos' funcSymbols are defined (or upgraded) before their code bytes are written,
+  because the loop processes each xmo's strings, then symbols, then code, then relocs in
+  one pass. No separate pre-pass needed.
 
-Single-file projects only for now:
-  Cross-file propagation requires the subscriber index. Not yet implemented.
-  hello.xm is a single-file project, so this is not a blocker for the immediate goal.
+CRT = none for test projects:
+  hello.xmc and multifile.xmc both use CRT=none. The Linker emits /ENTRY:main /NODEFAULTLIB.
 
 Windows x64 only:
-  All register names (rcx, rdx, r8, r9), ABI rules (shadow space, alignment),
+  All register names (rcx/rdx/r8/r9), ABI rules (shadow space, 16-byte alignment),
   and COFF output are Windows x64 specific.
-  [Eventually we hope to port to other platforms and CPU architectures, but that's a far off goal.]
 
 
 9. COMMON MISTAKES FROM PRIOR SESSIONS
@@ -241,41 +323,87 @@ Windows x64 only:
 2. Running "xmc.exe hello.xm" or "xmc hello.xmc" — the argument is the base name only.
    Run from inside the test directory: xmc.exe hello
 
-3. Changing MorphTree's signature or call sites without updating all three locations:
-   Morpher.h, Morpher.cpp, Parser.cpp, AND Compiler.cpp (HandleBreakOuts).
+3. Reverting to the old "collect leaves in Drive(), drain in MorphTree" design.
+   Leaf tasks are submitted from addLeaf()/popNode() during Drive(). MorphTree only
+   writes the log. Do not add leaf submission back to MorphTree.
 
-4. Submitting pool tasks from inside Drive() for concurrent morphing — this causes pendingChildren underflow because popNode() hasn't been called yet for parent nodes.
+4. Using pool.submit_task for fire-and-forget morpher or callback tasks.
+   submit_task is [[nodiscard]]; use pool.detach_task instead.
 
 5. Calling pool.wait() from within a pool task — deadlock risk.
+   pool.wait() belongs in RunModifiedPipeline on the main thread, after fileFutures.wait().
 
 6. Adding a declSite map to Morpher — use sym->declNode instead (already on Symbol).
 
-7. Re-adding morphQueue to Xmo — it was deliberately removed; use the leaves vector in ParseCtx.
+7. Re-adding morphQueue or a leaves vector to Xmo or ParseCtx — both were deliberately
+   removed. Leaf tasks are submitted inline; no collection step exists.
 
-8. Forgetting that the Parser.h comment block at the top still references the old "submits a Morpher task to the shared thread pool" design — the header comment is stale
-   but the struct and function signatures are authoritative.
+8. Adding external symbol entries for project-local function calls in Emitter Phase 2.
+   Project-local functions (those in any xmo's funcSymbols) use defined symbol indices.
+
+9. Implementing the subscriber callback as a blocking wait — it must be a non-blocking
+   continuation submitted as a pool.detach_task when the declaration fires.
+
+10. Using IMAGE_SYM_CLASS_EXTERNAL for string literal .rdata symbols — causes LNK2005
+    when two xmos have same-named locals (e.g. both have "msg"). Use IMAGE_SYM_CLASS_STATIC
+    and a per-xmo localStrMap in EmitPhase2.
+
+11. Looking up string literal COFF symbols in the cross-xmo symbolMap — they live in the
+    per-xmo localStrMap. Only function call relocations (kind=0) use symbolMap.
 
 
 10. NEXT STEPS IN ORDER
 ========================
 
-Step 1: Implement Reviewer.cpp
-    Remove the inline no-op body from Reviewer.h (or keep as declaration; move impl to .cpp).
-    Implement Reviewer::Review per §5 above.
-    Target: after Review() runs on hello.xm's main(), the tree has correct paramSlot on
-    each arg, totalStackSize=56 on main's FuncDecl, funcFlags=0, and Symbol::offset set for h and written.
-    Write a Reviewer log (job.ReviewerLog gate, not yet in CompileJob — add it) that lists each function's computed values for golden-file testing.
+Steps 1, 2, and the multifile end-to-end test are COMPLETE.
 
-Step 2: Implement Coder (Coder.h / Coder.cpp)
-    Define the CodeBlocks table for the node kinds that appear in hello.xm.
-    Populate codeBlocks on each node.
+Step 1 (DONE): Subscriber Index — SubscribeOrResolve implemented; cross-file Ident
+               resolution works; DeclareSymbol drains waiters as pool tasks.
 
-Step 3: Implement Emitter (Emitter.cpp)
-    Phase 1: emit bytes from codeBlocks into Xmo::codeBuffer; accumulate relocations.
-    Phase 2: write COFF .obj. The Coff class may already exist — check src/tool/ or src/compiler/.
+Step 2 (DONE): Concurrent Morphing per noun — leaf tasks submitted from Parser during
+               Drive(); three-field protocol (morphed_children/parser_complete/morphed);
+               PropagateUp walks parents inline; pool.wait() drains on main thread.
 
-Step 4: End-to-end test
-    Build and run: cd src\tests\hello && xmc.exe hello
-    Verify hello.exe prints "Hello, world!\n" and exits cleanly.
+Multifile test (DONE): greet() and farewell() resolve correctly; output is correct.
 
-Step 5: Create a multi-xm-file test and implement and test subscriber index and concurrent Morphing
+Step 3 (DONE): Implement Concurrent Reviewing per file
+
+                Change: In Compiler.cpp RunReviewer, replace the sequential loop with pool task submission.
+                Each Reviewer task is independent — no shared write state across files.
+
+                Pattern (see §7b):
+                    BS::multi_future<void> futures;
+                    for (auto& xmo : s.xmos) {
+                        if (xmo->state... != Modified) continue;
+                        Xmo* x = xmo.get();
+                        futures.push_back(pool.submit_task([&s, x] {
+                            if (!s.job.ErrorOccurred.load(std::memory_order_relaxed))
+                                Reviewer::Review(*x, s.symbols, s.job);
+                        }));
+                    }
+                    futures.wait();
+
+                Verification: both hello and multifile tests still pass.
+
+Step 4 (DONE): Implement Concurrent Coding per file
+
+                Same pattern for RunCoder. Coder reads Reviewer-written fields (paramSlot, totalStackSize)
+                and writes codeBlocks on nodes. No sharing between files. 
+
+Step 5: Implement Concurrent Emitter Phase 1 per file
+------------------------------------------------------
+Same pattern for RunEmitterPhase1. Emitter Phase 1 reads codeBlocks (written by Coder)
+and writes xmo.codeBuffer / xmo.relocs / xmo.relocTargetNames / xmo.funcSymbols.
+No sharing between files. Phase 2 stays single-threaded.
+
+Step 6: Implement and test incremental compilation
+---------------------------------------------------
+Currently .xmo files are not being written to disk.
+- Emitter Phase 1 should serialize each modified xmo (parse tree + code buffer + file-scope symbol
+  declarations) to a .xmo file after processing.
+- Builder should detect when .xm files are newer than their .xmo (or .xmo is missing)
+  and set up compile jobs accordingly.
+- For unmodified files where no cross-file type changes propagate in, reuse the stored
+  code buffer directly in Emitter Phase 2 — skip Morpher, Reviewer, Coder entirely.
+- For unmodified files where cross-file changes do propagate in, re-morph from the stored
+  parse tree (no reparse needed); local symbols are re-declared by the Morpher naturally.

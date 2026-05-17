@@ -1,0 +1,14 @@
+Code buffer: 63 bytes
+
+48 83 EC 38 B9 F5 FF FF FF E8 00 00 00 00 48 89 
+44 24 28 48 8B 4C 24 28 48 8D 15 00 00 00 00 41 
+B8 14 00 00 00 4C 8D 4C 24 30 48 C7 44 24 20 00 
+00 00 00 E8 00 00 00 00 33 C0 48 83 C4 38 C3 
+
+Relocations: 3
+  [0] offset=10  kind=0  target=GetStdHandle
+  [1] offset=27  kind=1  target=msg
+  [2] offset=52  kind=0  target=WriteFile
+
+Functions:
+  greet @ 0

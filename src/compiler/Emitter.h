@@ -1,15 +1,4 @@
 // compiler/Emitter.h
-//
-// STUB. Two entry points:
-//
-//   EmitPhase1(xmo, job)
-//       Per-Xmo. Runs after Coder. Real implementation will lay out
-//       this xmo's code/data sections and resolve in-file relocations.
-//
-//   EmitPhase2(xmos, job)
-//       Whole-job. Real implementation will write the final COFF
-//       object file using accumulated phase-1 output from every xmo.
-//
 #pragma once
 
 #include <memory>
@@ -23,23 +12,16 @@ namespace xmc
 	class Emitter
 	{
 	public:
-		static void EmitPhase1(
-			Xmo&              xmo,
-			const CompileJob& job)
-		{
-			(void)xmo;
-			(void)job;
-			// No-op stub.
-		}
+		// Per-Xmo pass. Walks the parse tree, emits code bytes into
+		// xmo.codeBuffer, and accumulates relocations into xmo.relocs /
+		// xmo.relocTargetNames. Also records function symbols for Phase 2.
+		static void EmitPhase1(Xmo& xmo, const CompileJob& job);
 
+		// Whole-job pass. Assembles all xmos' code buffers, string-literal
+		// data, and relocation records into a single COFF .obj file.
 		static void EmitPhase2(
 			const std::vector<std::unique_ptr<Xmo>>& xmos,
-			const CompileJob&                        job)
-		{
-			(void)xmos;
-			(void)job;
-			// No-op stub.
-		}
+			const CompileJob&                        job);
 	};
 
 } // namespace xmc

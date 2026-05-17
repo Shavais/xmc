@@ -282,7 +282,14 @@ namespace xmc
 		std::vector<XmoRelocation> relocs;
 		std::vector<XmoScope>      scopeTree;
 		ParseTreeNode* parseTree = nullptr; // into arena
-		uint32_t                   tempGlobalOffset = 0;
+		// Emitter Phase 1 → Phase 2 communication.
+		// relocTargetNames[i] is the symbol name for relocs[i] (indexed by
+		// XmoRelocation::targetNameOffset). kind=0 means external call;
+		// kind=1 means .rdata string reference.
+		// funcSymbols holds (name, offset-in-codeBuffer) for each FuncDecl
+		// emitted; Phase 2 uses this to define COFF public symbols.
+		std::vector<std::string>                       relocTargetNames;
+		std::vector<std::pair<std::string, uint32_t>>  funcSymbols;
 
 		// Back-reference: symbols declared in this xmo. Non-owning;
 		// SymbolTable owns the Symbol objects. Populated by

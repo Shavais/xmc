@@ -5,5 +5,5 @@
 .\test01_extern_simple.xm:3:8        Type  ::  u32
 
 Symbols:
-  a  ::  u32  [stack]  scope=3.4
-  Foo  ::  function  [stack]  scope=3
+  a  ::  u32  [stack]  scope=2.4
+  Foo  ::  function  [stack]  scope=2

@@ -131,10 +131,17 @@ namespace xmc
         uint8_t         pointerDepth = 0; // Type: leading '*' count
         bool            isArray      = false; // Type: trailing "[]"
 
-        // Morpher coordination. Initialised to childCount by the Parser when the
-        // node is committed. The Morpher atomically decrements it as each child
-        // resolves; the task that brings it to zero applies the parent's rule.
-        std::atomic<uint16_t> pendingChildren{0};
+        // Morpher coordination.
+        // morphed_children: incremented (seq_cst) by each child's Morpher when done.
+        // parser_complete:  stored true (seq_cst) by the parser when this node is closed.
+        // morphed:          test-and-set to claim the right to run this node's morph rule.
+        //   Protocol: a thread wins the right to morph this node when it observes both
+        //   parser_complete==true and morphed_children==childCount, and wins morphed.exchange.
+        //   The seq_cst ordering on the store/load pair eliminates the lost-wakeup race
+        //   between the parser closing the node and the last child's morpher completing.
+        std::atomic<uint32_t> morphed_children{0};
+        std::atomic<bool>     parser_complete{false};
+        std::atomic<bool>     morphed{false};
 
         // scopeId: pre-allocated by the Parser for scope-opening nodes
         // (File, ExternDecl, FuncDecl, Block). Zero for all other nodes.

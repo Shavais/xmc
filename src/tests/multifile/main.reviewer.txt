@@ -1,0 +1,7 @@
+FuncDecl main (line 3)
+  totalStackSize = 40
+  funcFlags      = 0
+  calls:
+    greet (line 4):
+    farewell (line 5):
+    ExitProcess (line 6): arg[0]=slot1

@@ -1,0 +1,62 @@
+.\greet.xm:1:7          File
+.\greet.xm:1:7            ExternDecl  kernel32:WriteFile  ::  function
+.\greet.xm:1:10             ReturnSpec  ::  b
+.\greet.xm:1:10               Type  ::  b
+.\greet.xm:1:32             ParamList
+.\greet.xm:1:23               Param  handle : rcx  ::  u64
+.\greet.xm:1:23                 Type  ::  u64
+.\greet.xm:1:41               Param  buffer : rdx  ::  *u8
+.\greet.xm:1:41                 Type  ::  *u8
+.\greet.xm:1:57               Param  bytesToWrite : r8  ::  u32
+.\greet.xm:1:57                 Type  ::  u32
+.\greet.xm:1:72               Param  bytesWritten : r9  ::  *u32
+.\greet.xm:1:72                 Type  ::  *u32
+.\greet.xm:1:94               Param  overlapped  ::  *u8
+.\greet.xm:1:94                 Type  ::  *u8
+.\greet.xm:2:1            ExternDecl  kernel32:GetStdHandle  ::  function
+.\greet.xm:2:12             ReturnSpec  ::  u64
+.\greet.xm:2:12               Type  ::  u64
+.\greet.xm:2:37             ParamList
+.\greet.xm:2:25               Param  stdHandleId : rcx  ::  i32
+.\greet.xm:2:25                 Type  ::  i32
+.\greet.xm:4:1            FuncDecl  greet  ::  function
+.\greet.xm:4:1              ReturnSpec  ::  i32
+.\greet.xm:4:1                Type  ::  i32
+.\greet.xm:4:10             ParamList
+.\greet.xm:4:13             Block
+.\greet.xm:5:5                VarDecl  h  ::  u64
+.\greet.xm:5:5                  Type  ::  u64
+.\greet.xm:5:13                 Call  ::  u64
+.\greet.xm:5:13                   Ident  GetStdHandle  ::  function
+.\greet.xm:5:13                   ArgList
+.\greet.xm:5:26                     IntLit  ::  u32
+.\greet.xm:6:5                VarDecl  msg  ::  u8[]
+.\greet.xm:6:5                  Type  ::  u8[]
+.\greet.xm:6:16                 StringLit  ::  u8[]
+.\greet.xm:7:5                VarDecl  written  ::  u64
+.\greet.xm:7:5                  Type  ::  u64
+.\greet.xm:8:5                ExprStmt
+.\greet.xm:8:5                  Call  ::  b
+.\greet.xm:8:5                    Ident  WriteFile  ::  function
+.\greet.xm:8:5                    ArgList
+.\greet.xm:8:15                     Ident  h  ::  u64
+.\greet.xm:8:18                     Ident  msg  ::  u8[]
+.\greet.xm:8:23                     MemberAccess  length  ::  u64
+.\greet.xm:8:23                       Ident  msg  ::  u8[]
+.\greet.xm:8:27                     AddressOf  ::  *u64
+.\greet.xm:8:36                       Ident  written  ::  u64
+.\greet.xm:8:45                     NullLit  ::  null
+
+Symbols:
+  handle  ::  u64  [stack]  scope=3.4
+  buffer  ::  *u8  [stack]  scope=3.4
+  bytesToWrite  ::  u32  [stack]  scope=3.4
+  bytesWritten  ::  *u32  [stack]  scope=3.4
+  overlapped  ::  *u8  [stack]  scope=3.4
+  WriteFile  ::  function  [stack]  scope=3
+  stdHandleId  ::  i32  [stack]  scope=3.10
+  GetStdHandle  ::  function  [stack]  scope=3
+  h  ::  u64  [stack]  scope=3.12.14
+  msg  ::  u8[]  [stack]  scope=3.12.14
+  written  ::  u64  [stack]  scope=3.12.14
+  greet  ::  function  [stack]  scope=3

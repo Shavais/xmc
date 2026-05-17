@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -179,12 +180,26 @@ namespace xmc
 		// Registers a symbol definition. namespacePath is the scope stack
 		// at the declaration site, outermost (file) scope id first.
 		// The returned pointer is stable for the lifetime of this table.
-		Symbol* InternSymbol(std::string_view name, const uint32_t* namespacePath, uint32_t pathLen);
+		// If outWaiters is non-null, any pending SubscribeOrResolve callbacks
+		// for this name are moved into *outWaiters before the lock releases;
+		// the caller submits them as pool tasks.
+		Symbol* InternSymbol(std::string_view name, const uint32_t* namespacePath, uint32_t pathLen,
+		                     std::vector<std::function<void(Symbol*)>>* outWaiters = nullptr);
 
 		// Resolves a symbol reference. callerPath is the scope stack at
 		// the reference site, outermost first. Returns the best-matching
 		// symbol, or nullptr if not found or ambiguous.
 		Symbol* ResolveSymbol(std::string_view name, const uint32_t* callerPath, uint32_t callerPathLen);
+
+		// Tries to resolve a symbol immediately. If found, returns it.
+		// If not found, registers onResolved to be drained (as a pool task
+		// via DeclareSymbol) when a matching symbol is later declared.
+		// Returns nullptr when the callback was stored (deferred path).
+		// Thread-safe: holds the shard write lock for the check-and-register.
+		Symbol* SubscribeOrResolve(std::string_view name,
+		                           const uint32_t* callerPath,
+		                           uint32_t callerPathLen,
+		                           std::function<void(Symbol*)> onResolved);
 
 		// Allocates a fresh, globally unique scope id for this job.
 		// Upper 16 bits = file index, lower 16 bits = per-file counter.

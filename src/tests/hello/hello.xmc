@@ -3,15 +3,12 @@ Arch = x64
 Type = exe
 EntryFile = hello               # names the .sv file that contains the entry function (defaults to the project name)
 EntryFunc = main                # names entry point function (defaults to main)
-Subsystem = console             
-CRT = static                    # static, dynamic, static-debug, dynamic-debug
+Subsystem = console
+CRT = none                      # none = no CRT, entry point is main directly
 LibPaths = [
-    C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64, 
-    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/ucrt/x64,
-	C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
+    C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64
 ]
-StaticLibs = [svge.lib]
-DynamicLibs = [kernel32.lib, shell32.lib]
+DynamicLibs = [kernel32.lib]
 SourceRoot = .                  # optional, the default is the current working directory
 Sources = [*.xm]
 
